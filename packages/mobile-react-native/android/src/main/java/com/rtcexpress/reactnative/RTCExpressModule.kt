@@ -22,6 +22,16 @@ class RTCExpressModule(private val reactContext: ReactApplicationContext) :
 
     override fun getName() = "RTCExpress"
 
+    @ReactMethod
+    fun addListener(eventName: String) {
+        // Required for RN NativeEventEmitter; we use RCTDeviceEventEmitter.
+    }
+
+    @ReactMethod
+    fun removeListeners(count: Int) {
+        // Required for RN NativeEventEmitter.
+    }
+
     private fun emit(event: String, payload: Any?) {
         reactContext
             .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
@@ -68,34 +78,43 @@ class RTCExpressModule(private val reactContext: ReactApplicationContext) :
         }
     }
 
-    @ReactMethod
-    fun joinRoom(roomId: String) {
-        rtc?.joinRoom(roomId)
+    private fun runRtc(block: () -> Unit) {
+        try {
+            if (rtc == null) throw IllegalStateException("RTC not initialized — open chat first")
+            block()
+        } catch (e: Exception) {
+            emit("error", Arguments.createMap().apply { putString("message", e.message ?: "RTC error") })
+        }
     }
 
     @ReactMethod
-    fun sendMessage(text: String) {
-        rtc?.sendMessage(text)
+    fun joinRoom(roomId: String) {
+        runRtc { rtc?.joinRoom(roomId) }
+    }
+
+    @ReactMethod
+    fun sendMessage(text: String, clientMsgId: String) {
+        runRtc { rtc?.sendMessage(text, clientMsgId) }
     }
 
     @ReactMethod
     fun callUser(peerUserId: String, video: Boolean) {
-        rtc?.callUser(peerUserId, video)
+        runRtc { rtc?.callUser(peerUserId, video) }
     }
 
     @ReactMethod
     fun acceptCall() {
-        rtc?.acceptCall()
+        runRtc { rtc?.acceptCall() }
     }
 
     @ReactMethod
     fun rejectCall() {
-        rtc?.rejectCall()
+        runRtc { rtc?.rejectCall() }
     }
 
     @ReactMethod
     fun endCall() {
-        rtc?.endCall()
+        runRtc { rtc?.endCall() }
     }
 
     @ReactMethod
@@ -145,6 +164,7 @@ class RTCExpressModule(private val reactContext: ReactApplicationContext) :
                 putString("fromUserId", message.fromUserId)
                 putString("text", message.text)
                 putDouble("sentAt", message.sentAt.toDouble())
+                putString("clientMsgId", message.clientMsgId)
             }
         )
     }
@@ -174,11 +194,10 @@ class RTCExpressModule(private val reactContext: ReactApplicationContext) :
         )
     }
 
-    override fun onRemoteVideo(track: org.webrtc.VideoTrack) {
-        emit("remoteVideo", Arguments.createMap().apply { putString("trackId", track.id()) })
-    }
-
     override fun onError(message: String) {
         emit("error", Arguments.createMap().apply { putString("message", message) })
+    }
+    override fun onDiagnostics(message: String) {
+        emit("diagnostics", Arguments.createMap().apply { putString("message", message) })
     }
 }

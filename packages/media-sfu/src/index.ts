@@ -3,7 +3,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { SfuManager } from "./sfu.js";
 import { loadSfuEnv } from "./env.js";
-import { createAuthHook } from "./auth.js";
+import { createAuthHook, type AuthenticatedRequest } from "./auth.js";
 import { CloudRecordingManager } from "./cloud-recording.js";
 import { CdnStreamManager } from "./cdn-streaming.js";
 
@@ -42,7 +42,7 @@ app.post<{ Params: { roomId: string }; Body: { peerId?: string } }>(
 
     const room = await sfu.getOrCreateRoom(req.params.roomId);
     return {
-      roomId: req.params.roomId,
+      roomId: (req as AuthenticatedRequest).rtcRoomId,
       peerId,
       rtpCapabilities: room.router.rtpCapabilities,
     };

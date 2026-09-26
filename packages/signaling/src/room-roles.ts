@@ -33,6 +33,8 @@ export class MemoryRoomRoleStore implements RoomRoleStore {
 
   assign(roomId: string, userId: string, role: RoomRole): RoomRole {
     const members = this.room(roomId);
+    // Rejoining after socket replacement must not demote the current host.
+    if (members.get(userId) === "host" && role !== "audience") return "host";
     const hasHost = [...members.values()].includes("host");
     const effective = !hasHost && role !== "audience" ? "host" : role;
     members.set(userId, effective);

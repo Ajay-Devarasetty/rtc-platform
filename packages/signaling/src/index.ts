@@ -28,10 +28,19 @@ import { registerBillingRoutes } from "./routes/billing.js";
 import { registerMediaSessionRoutes } from "./routes/media-sessions.js";
 import { registerLeadRoutes } from "./routes/leads.js";
 import { registerDemoTokenRoutes } from "./routes/demo-token.js";
-import { endMediaSessionsForUser } from "./media-sessions.js";
+import { registerAuthRoutes } from "./routes/auth.js";
+import { registerPortalRoutes } from "./routes/portal.js";
+import { endMediaSessionsForUser, leaveMediaSession } from "./media-sessions.js";
 import { registerMessageRoutes } from "./routes/messages.js";
-import { endActiveCallsForUser } from "./metering.js";
-import { clearUserCalls } from "./call-state.js";
+import { endActiveCallsForUser, endCallSession } from "./metering.js";
+import { clearUserCalls, expireRingingCalls, findUserCall } from "./call-state.js";
+import { tenantKey, scopedRooms, scopedRoles } from "./tenant-scope.js";
+import { registerMediaAuthorizeRoutes } from "./routes/media-authorize.js";
+import { ProjectTaskQueue } from "./task-queue.js";
+import { registerPushRoutes } from "./routes/push.js";
+import { sendCallPush } from "./push.js";
+import { registerAccountSecurityRoutes } from "./routes/account-security.js";
+import { registerDiagnosticsRoutes } from "./routes/diagnostics.js";
 import { dispatchEvent } from "./webhooks.js";
 import { setRecordingsDir, ensureRecordingsDir } from "./recordings.js";
 import { MemoryRoomRoleStore } from "./room-roles.js";
@@ -68,6 +77,11 @@ await registerBillingRoutes(app);
 await registerMediaSessionRoutes(app);
 await registerLeadRoutes(app);
 await registerDemoTokenRoutes(app, { jwtSecret: env.jwtSecret });
+await registerAuthRoutes(app, env.jwtSecret);
+await registerPortalRoutes(app, env.jwtSecret);
+await registerPushRoutes(app, env.jwtSecret);
+await registerAccountSecurityRoutes(app, env.jwtSecret);
+await registerDiagnosticsRoutes(app, env.jwtSecret);
 
 let rooms: RoomStore = new MemoryRoomStore();
 const roomRoles = new MemoryRoomRoleStore();
@@ -86,6 +100,7 @@ if (redisPub && redisSub) {
 // Registered here rather than with the other routes so it binds the final
 // room store, after Redis has had its chance to replace the in-memory one.
 await registerMessageRoutes(app, { jwtSecret: env.jwtSecret, rooms });
+await registerMediaAuthorizeRoutes(app, { jwtSecret: env.jwtSecret, rooms, roomRoles });
 await registerCloudRecordingRoutes(app, {
   jwtSecret: env.jwtSecret,
   recordingsDir: env.recordingsDir,
@@ -165,7 +180,7 @@ app.post<{ Body: TokenRequest }>("/v1/token", async (req, reply) => {
   }
 
   const { appId, appSecret, userId, roomId, role } = req.body || {};
-  if (!appId || !appSecret || !userId) {
+  if (typeof appId !== "string" || typeof appSecret !== "string" || typeof userId !== "string" || !appId || !appSecret || !userId || userId === "__portal__") {
     return reply.status(400).send({ error: "appId, appSecret, and userId are required" });
   }
 
@@ -180,19 +195,20 @@ app.post<{ Body: TokenRequest }>("/v1/token", async (req, reply) => {
 });
 
 const userNotifier = {
-  sendToUser: async (_userId: string, _message: ServerMessage) => false,
+  sendToUser: async (_appId: string, _userId: string, _message: ServerMessage) => false,
 };
 
 await registerRecordingUploadRoutes(app, {
   env,
-  dispatch: dispatchEvent,
-  sendToUser: (userId, message) => userNotifier.sendToUser(userId, message),
+  dispatch: dispatchSafely,
+  sendToUser: (appId, userId, message) => userNotifier.sendToUser(appId, userId, message),
 });
 
 await app.ready();
 const wss = new WebSocketServer({ server: app.server, path: "/ws" });
 
 const sockets = new Map<string, WebSocket>();
+const projectTasks = new ProjectTaskQueue();
 
 function send(ws: WebSocket, message: ServerMessage) {
   if (ws.readyState === WebSocket.OPEN) {
@@ -210,7 +226,25 @@ const relay = new MessageRelay(
 );
 await relay.start();
 
-userNotifier.sendToUser = (userId, message) => relay.sendToUser(userId, message);
+userNotifier.sendToUser = (appId, userId, message) => relay.sendToUser(tenantKey(appId, userId), message);
+
+function dispatchSafely(appId: string, type: string, payload: Record<string, unknown>) {
+  if (type === "call.ringing") void sendCallPush(appId, payload).catch(() => app.log.error("Call push failed; check FCM configuration and push delivery records"));
+  void dispatchEvent(appId, type, payload).catch((err) => app.log.error({ err }, "Event dispatch failed"));
+}
+
+const ringingTimer = setInterval(() => {
+  for (const call of expireRingingCalls()) {
+    for (const userId of [call.callerUserId, call.calleeUserId]) {
+      void relay.sendToUser(tenantKey(call.appId, userId), {
+        type: "call_end",
+        payload: { callId: call.callId, roomId: call.roomId, fromUserId: userId === call.callerUserId ? call.calleeUserId : call.callerUserId, toUserId: userId, reason: "no_answer" },
+      }).catch((err) => app.log.error({ err }, "Call timeout delivery failed"));
+    }
+    dispatchSafely(call.appId, "call.failed", { ...call, reason: "no_answer" });
+  }
+}, 1000);
+ringingTimer.unref();
 
 async function forceLeaveRoom(
   appId: string,
@@ -218,25 +252,35 @@ async function forceLeaveRoom(
   targetUserId: string,
   reason: string
 ) {
-  await rooms.leave(roomId, targetUserId);
-  roomRoles.remove(roomId, targetUserId);
-  await endMediaSessionsForUser(appId, targetUserId);
-  await endActiveCallsForUser(appId, targetUserId);
-  clearUserCalls(appId, targetUserId);
+  const appRooms = scopedRooms(rooms, appId);
+  await appRooms.leave(roomId, targetUserId);
+  scopedRoles(roomRoles, appId).remove(roomId, targetUserId);
+  await leaveMediaSession(appId, roomId, targetUserId, reason);
+  await closeUserCall(appId, targetUserId, reason, roomId);
 
-  await relay.sendToUser(targetUserId, {
+  await relay.sendToUser(tenantKey(appId, targetUserId), {
     type: "user_kicked",
     payload: { roomId, reason },
   });
 
-  const members = await rooms.getMembers(roomId);
+  const members = await appRooms.getMembers(roomId);
   for (const memberId of members) {
-    await relay.sendToUser(memberId, {
+    await relay.sendToUser(tenantKey(appId, memberId), {
       type: "user_left",
       payload: { roomId, userId: targetUserId },
     });
   }
-  void dispatchEvent(appId, "user.left", { roomId, userId: targetUserId, reason });
+  dispatchSafely(appId, "user.left", { roomId, userId: targetUserId, reason });
+}
+
+async function closeUserCall(appId: string, userId: string, reason: string, roomId?: string) {
+  const call = findUserCall(appId, userId);
+  if (!call || (roomId && call.roomId !== roomId)) return;
+  await endCallSession(appId, call.callId, reason);
+  clearUserCalls(appId, userId);
+  const peer = call.callerUserId === userId ? call.calleeUserId : call.callerUserId;
+  await relay.sendToUser(tenantKey(appId, peer), { type: "call_end", payload: { callId: call.callId, roomId: call.roomId, fromUserId: userId, toUserId: peer, reason } });
+  dispatchSafely(appId, "call.ended", { callId: call.callId, roomId: call.roomId, fromUserId: userId, toUserId: peer, reason });
 }
 
 wss.on("connection", (ws, req) => {
@@ -257,29 +301,48 @@ wss.on("connection", (ws, req) => {
   }
 
   const { userId } = claims;
-  sockets.set(userId, ws);
-  void presence.setOnline(userId, env.instanceId);
+  const socketKey = tenantKey(claims.appId, userId);
+  const appRooms = scopedRooms(rooms, claims.appId);
+  const appRoles = scopedRoles(roomRoles, claims.appId);
+  void projectTasks.run(claims.appId, async () => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    const previous = sockets.get(socketKey);
+    sockets.set(socketKey, ws);
+    previous?.close(4000, "Replaced by a new connection");
+    await presence.setOnline(socketKey, env.instanceId);
 
-  send(ws, {
-    type: "connected",
-    payload: { userId, appId: claims.appId, instanceId: env.instanceId },
-  });
+    send(ws, {
+      type: "connected",
+      payload: { userId, appId: claims.appId, instanceId: env.instanceId },
+    });
+
+    const pendingCall = findUserCall(claims.appId, userId);
+    if (pendingCall?.phase === "ringing" && pendingCall.calleeUserId === userId && pendingCall.ringingExpiresAt > Date.now() && (!claims.roomId || claims.roomId === pendingCall.roomId)) {
+      send(ws, { type: "call_invite", payload: { callId: pendingCall.callId, roomId: pendingCall.roomId, fromUserId: pendingCall.callerUserId, toUserId: userId, callType: pendingCall.callType } });
+    }
+  }).catch((err) => { app.log.error({ err }, "Connection setup failed"); ws.close(1011, "Connection setup failed"); });
 
   ws.on("message", (raw) => {
     try {
       const message = JSON.parse(raw.toString()) as ClientMessage;
-      void handleClientMessage({
-        message,
-        claims,
-        ws,
-        rooms,
-        roomRoles,
-        send,
-        sendToUser: (targetUserId, serverMessage) =>
-          relay.sendToUser(targetUserId, serverMessage),
-        dispatch: (type, payload) => void dispatchEvent(claims.appId, type, payload),
-        forceLeaveRoom: (roomId, targetUserId, reason) =>
-          forceLeaveRoom(claims.appId, roomId, targetUserId, reason),
+      void projectTasks.run(claims.appId, async () => {
+        if (sockets.get(socketKey) !== ws) return;
+        await handleClientMessage({
+          message,
+          claims,
+          ws,
+          rooms: appRooms,
+          roomRoles: appRoles,
+          send,
+          sendToUser: (targetUserId, serverMessage) =>
+            relay.sendToUser(tenantKey(claims.appId, targetUserId), serverMessage),
+          dispatch: (type, payload) => dispatchSafely(claims.appId, type, payload),
+          forceLeaveRoom: (roomId, targetUserId, reason) =>
+            forceLeaveRoom(claims.appId, roomId, targetUserId, reason),
+        });
+      }).catch((err) => {
+        app.log.error({ err }, "Signaling message failed");
+        send(ws, { type: "error", payload: { message: "Unable to process message", code: "message_failed" }, requestId: message?.requestId });
       });
     } catch {
       send(ws, { type: "error", payload: { message: "Invalid message format" } });
@@ -287,27 +350,29 @@ wss.on("connection", (ws, req) => {
   });
 
   ws.on("close", () => {
-    sockets.delete(userId);
-    void (async () => {
-      await presence.setOffline(userId);
+    void projectTasks.run(claims.appId, async () => {
+      if (sockets.get(socketKey) !== ws) return;
+      sockets.delete(socketKey);
+      await presence.setOffline(socketKey);
       // Close group media and any in-progress call before dropping room
       // membership, so a lost socket can't leave a session open indefinitely.
       await endMediaSessionsForUser(claims.appId, userId);
+      await closeUserCall(claims.appId, userId, "disconnected");
       await endActiveCallsForUser(claims.appId, userId);
       clearUserCalls(claims.appId, userId);
-      const leftRooms = await rooms.leaveAll(userId);
+      const leftRooms = await appRooms.leaveAll(userId);
       for (const roomId of leftRooms) {
-        roomRoles.remove(roomId, userId);
-        const members = await rooms.getMembers(roomId);
+        appRoles.remove(roomId, userId);
+        const members = await appRooms.getMembers(roomId);
         for (const memberId of members) {
-          await relay.sendToUser(memberId, {
+          await relay.sendToUser(tenantKey(claims.appId, memberId), {
             type: "user_left",
             payload: { roomId, userId },
           });
         }
-        void dispatchEvent(claims.appId, "user.left", { roomId, userId });
+        dispatchSafely(claims.appId, "user.left", { roomId, userId });
       }
-    })();
+    }).catch((err) => app.log.error({ err }, "Disconnect cleanup failed"));
   });
 });
 
@@ -320,6 +385,7 @@ let shuttingDown = false;
 async function shutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
+  clearInterval(ringingTimer);
   console.log(`Shutting down (${signal})...`);
 
   for (const ws of sockets.values()) {

@@ -1,4 +1,4 @@
-import { NativeModules, NativeEventEmitter, type EmitterSubscription } from "react-native";
+import { DeviceEventEmitter, Platform, NativeModules, NativeEventEmitter, type EmitterSubscription } from "react-native";
 
 const LINKING_ERROR =
   "The package '@rtc/react-native-sdk' doesn't seem to be linked. Run pod install (iOS) and rebuild.";
@@ -14,7 +14,7 @@ const Native = NativeModules.RTCExpress
       }
     );
 
-const emitter = new NativeEventEmitter(Native);
+const emitter = Platform.OS === "android" ? DeviceEventEmitter : new NativeEventEmitter(Native);
 
 export type MediaMode = "p2p" | "sfu" | "auto";
 
@@ -70,8 +70,9 @@ export class RTCExpress {
     Native.joinRoom(roomId);
   }
 
-  sendMessage(text: string): void {
-    Native.sendMessage(text);
+  sendMessage(text: string, clientMsgId = ""): void {
+    if (Platform.OS === "android") Native.sendMessage(text, clientMsgId);
+    else Native.sendMessage(text);
   }
 
   callUser(peerUserId: string, video = false): void {

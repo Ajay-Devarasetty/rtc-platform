@@ -28,7 +28,7 @@ import { checkAppFeature } from "./plan-features.js";
 import type { PlanFeature } from "./billing-plans.js";
 import {
   clearCall,
-  clearUserCalls,
+  findUserCall,
   markCallConnected,
   registerRinging,
 } from "./call-state.js";
@@ -92,6 +92,16 @@ async function requireFeature(
 export async function handleClientMessage(ctx: HandlerContext) {
   const { message, claims, ws } = ctx;
   const userId = claims.userId;
+  if (!message || typeof message.type !== "string" || !message.payload || typeof message.payload !== "object" || Array.isArray(message.payload)) {
+    ctx.send(ws, { type: "error", payload: { message: "Invalid message format" } });
+    return;
+  }
+  const roomId = (message.payload as { roomId?: unknown }).roomId;
+  const isPeerSignal = ["webrtc_offer", "webrtc_answer", "ice_candidate"].includes(message.type);
+  if (!isPeerSignal && (typeof roomId !== "string" || !roomId.trim() || !assertRoomScope(ctx, roomId, ws))) {
+    if (typeof roomId !== "string" || !roomId.trim()) ctx.send(ws, { type: "error", payload: { message: "roomId is required" } });
+    return;
+  }
 
   switch (message.type) {
     case "join_room": {
@@ -101,7 +111,8 @@ export async function handleClientMessage(ctx: HandlerContext) {
         return;
       }
       if (!assertRoomScope(ctx, roomId, ws)) return;
-      const requestedRole = role || ctx.claims.role || "publisher";
+      // A client may opt into audience mode, but cannot elevate its signed role.
+      const requestedRole = role === "audience" ? "audience" : ctx.claims.role || "publisher";
       const assignedRole = ctx.roomRoles.assign(roomId, userId, requestedRole);
       await ctx.rooms.join(roomId, userId);
       const members = (await ctx.rooms.getMembers(roomId)).filter((id) => id !== userId);
@@ -122,12 +133,21 @@ export async function handleClientMessage(ctx: HandlerContext) {
 
     case "leave_room": {
       const { roomId } = message.payload as { roomId: string };
+      if (!(await ctx.rooms.isMember(roomId, userId))) return;
+      const call = findUserCall(claims.appId, userId);
+      if (call?.roomId === roomId) {
+        await endCallSession(claims.appId, call.callId, "left_room");
+        clearCall(claims.appId, call.callId);
+        const toUserId = call.callerUserId === userId ? call.calleeUserId : call.callerUserId;
+        await ctx.sendToUser(toUserId, { type: "call_end", payload: { callId: call.callId, roomId, fromUserId: userId, toUserId } });
+        ctx.dispatch("call.ended", { callId: call.callId, roomId, fromUserId: userId, toUserId, reason: "left_room" });
+      }
       await ctx.rooms.leave(roomId, userId);
       ctx.roomRoles.remove(roomId, userId);
       // Leaving the room ends any group media in it. Done as a direct call
       // rather than a media.left event so subscribers aren't sent a delivery
       // for someone who was never in media — the update matches no rows then.
-      void leaveMediaSession(ctx.claims.appId, roomId, userId, "left_room");
+      await leaveMediaSession(ctx.claims.appId, roomId, userId, "left_room");
       const members = await ctx.rooms.getMembers(roomId);
       for (const memberId of members) {
         await ctx.sendToUser(memberId, {
@@ -169,6 +189,8 @@ export async function handleClientMessage(ctx: HandlerContext) {
         sentAt: Date.now(),
         clientMsgId,
       };
+      // Persist before delivery so a refresh cannot race the history write.
+      await saveMessage(ctx.claims.appId, roomId, userId, text, clientMsgId);
       const members = await ctx.rooms.getMembers(roomId);
       for (const memberId of members) {
         if (memberId !== userId) {
@@ -177,9 +199,8 @@ export async function handleClientMessage(ctx: HandlerContext) {
       }
       // Text is persisted here rather than routed through dispatch, so chat
       // content stays out of the event log and customer webhook payloads.
-      void saveMessage(ctx.claims.appId, roomId, userId, text, clientMsgId);
       ctx.dispatch("message.sent", { roomId, fromUserId: userId });
-      void maybeDispatchBillingAlert(ctx.claims.appId, (type, payload) =>
+      await maybeDispatchBillingAlert(ctx.claims.appId, (type, payload) =>
         ctx.dispatch(type, payload)
       );
       break;
@@ -187,16 +208,24 @@ export async function handleClientMessage(ctx: HandlerContext) {
 
     case "call_invite": {
       const { roomId, toUserId, callId } = message.payload as CallInvitePayload;
+      if (typeof toUserId !== "string" || !toUserId.trim() || toUserId === userId || typeof callId !== "string" || !callId.trim()) {
+        ctx.send(ws, { type: "error", payload: { message: "Valid callId and a different toUserId are required" } });
+        return;
+      }
       if (!(await ctx.rooms.isMember(roomId, userId))) {
         ctx.send(ws, { type: "error", payload: { message: "Join the room first" } });
         return;
       }
       if (!assertRoomScope(ctx, roomId, ws)) return;
       const callType = (message.payload as CallInvitePayload).callType || "voice";
+      if (callType !== "voice" && callType !== "video") {
+        ctx.send(ws, { type: "error", payload: { message: "Invalid call type" } });
+        return;
+      }
       const feature: PlanFeature = callType === "video" ? "video" : "voice";
       if (!(await requireFeature(ctx, feature))) return;
 
-      const busy = registerRinging(ctx.claims.appId, callId, roomId, userId, toUserId);
+      const busy = registerRinging(ctx.claims.appId, callId, roomId, userId, toUserId, callType);
       if (!busy.ok) {
         ctx.send(ws, {
           type: "error",
@@ -222,21 +251,13 @@ export async function handleClientMessage(ctx: HandlerContext) {
           callType: (message.payload as CallInvitePayload).callType,
         } satisfies CallPeerPayload,
       });
-      if (!delivered) {
-        clearCall(callId);
-        ctx.send(ctx.ws, {
-          type: "error",
-          payload: { message: `User ${toUserId} is offline`, code: "user_offline" },
-        });
-        return;
-      }
-
       ctx.dispatch("call.ringing", {
         callId,
         roomId,
         fromUserId: userId,
         toUserId,
         callType: (message.payload as CallInvitePayload).callType || "voice",
+        delivered,
       });
       break;
     }
@@ -245,15 +266,31 @@ export async function handleClientMessage(ctx: HandlerContext) {
     case "call_reject":
     case "call_end": {
       const payload = message.payload as CallPeerPayload;
+      const call = findUserCall(claims.appId, userId);
+      const peer = call?.callerUserId === userId ? call?.calleeUserId : call?.callerUserId;
+      if (!call || call.callId !== payload.callId || call.roomId !== payload.roomId || peer !== payload.toUserId ||
+          (message.type !== "call_end" && (call.calleeUserId !== userId || call.phase !== "ringing")) ||
+          (call.phase === "ringing" && call.ringingExpiresAt <= Date.now())) {
+        ctx.send(ws, { type: "error", payload: { message: "Invalid call state or participant", code: "invalid_call" } });
+        return;
+      }
       if (message.type === "call_accept") {
-        const callType = payload.callType || "voice";
+        const callType = call.callType;
         const feature: PlanFeature = callType === "video" ? "video" : "voice";
         if (!(await requireFeature(ctx, feature))) return;
-        markCallConnected(payload.callId);
+        if (findUserCall(claims.appId, userId) !== call || call.ringingExpiresAt <= Date.now()) return;
+        markCallConnected(claims.appId, payload.callId);
+        try {
+          await startCallSession(claims.appId, call.callId, call.roomId, call.callerUserId, call.calleeUserId);
+        } catch (error) {
+          call.phase = "ringing";
+          throw error;
+        }
       }
       await relayToUser(ctx, payload.toUserId, message.type, {
         ...payload,
         fromUserId: userId,
+        callType: call.callType,
       });
       const eventType =
         message.type === "call_accept"
@@ -263,26 +300,18 @@ export async function handleClientMessage(ctx: HandlerContext) {
             : "call.ended";
       ctx.dispatch(eventType, { ...payload, fromUserId: userId });
 
-      if (message.type === "call_accept") {
-        void startCallSession(
-          ctx.claims.appId,
-          payload.callId,
-          payload.roomId,
-          payload.toUserId,
-          userId
-        );
-      } else if (message.type === "call_end" || message.type === "call_reject") {
-        clearCall(payload.callId);
+      if (message.type === "call_end" || message.type === "call_reject") {
+        clearCall(claims.appId, payload.callId);
       }
 
       if (message.type === "call_end") {
-        void endCallSession(ctx.claims.appId, payload.callId, "hangup");
-        void maybeDispatchBillingAlert(ctx.claims.appId, (type, p) => ctx.dispatch(type, p));
+        await endCallSession(ctx.claims.appId, payload.callId, "hangup");
+        await maybeDispatchBillingAlert(ctx.claims.appId, (type, p) => ctx.dispatch(type, p));
       } else if (message.type === "call_reject") {
         // No session exists for a call that was never accepted, so this is a
         // no-op in the normal case. It matters when the callee rejects a second
         // invite for a call they had already answered.
-        void endCallSession(ctx.claims.appId, payload.callId, "rejected");
+        await endCallSession(ctx.claims.appId, payload.callId, "rejected");
       }
       break;
     }
@@ -291,6 +320,13 @@ export async function handleClientMessage(ctx: HandlerContext) {
     case "webrtc_answer":
     case "ice_candidate": {
       const payload = message.payload as WebRtcPayload;
+      const call = findUserCall(claims.appId, userId);
+      const peer = call?.callerUserId === userId ? call?.calleeUserId : call?.callerUserId;
+      if (!call || call.callId !== payload.callId || peer !== payload.toUserId || !assertRoomScope(ctx, call.roomId, ws)) {
+        ctx.send(ws, { type: "error", payload: { message: "Invalid call participant", code: "invalid_call" } });
+        return;
+      }
+      if (typeof payload.sdp?.sdp === "string" && /^m=video\s/m.test(payload.sdp.sdp) && !(await requireFeature(ctx, "video"))) return;
       await relayToUser(ctx, payload.toUserId, message.type, {
         ...payload,
         fromUserId: userId,
@@ -311,6 +347,7 @@ export async function handleClientMessage(ctx: HandlerContext) {
         ctx.send(ctx.ws, { type: "error", payload: { message: "Invalid SFU payload" } });
         return;
       }
+      if (!(await ctx.rooms.isMember(payload.roomId, userId))) return;
       const role = ctx.roomRoles.get(payload.roomId, userId);
       if (!canPublish(role)) {
         ctx.send(ctx.ws, {
@@ -326,6 +363,8 @@ export async function handleClientMessage(ctx: HandlerContext) {
         const feature: PlanFeature =
           payload.source === "screen" ? "screenShare" : "video";
         if (!(await requireFeature(ctx, feature))) return;
+      } else if (!(await requireFeature(ctx, "voice"))) {
+        return;
       }
       const messagePayload = {
         roomId: payload.roomId,
@@ -392,12 +431,12 @@ export async function handleClientMessage(ctx: HandlerContext) {
       }
 
       if (joining) {
-        void joinMediaSession(ctx.claims.appId, roomId, userId, kind);
+        await joinMediaSession(ctx.claims.appId, roomId, userId, kind);
       } else {
-        void leaveMediaSession(ctx.claims.appId, roomId, userId, "left");
+        await leaveMediaSession(ctx.claims.appId, roomId, userId, "left");
       }
       ctx.dispatch(joining ? "media.joined" : "media.left", { roomId, userId, kind });
-      void maybeDispatchBillingAlert(ctx.claims.appId, (type, p) => ctx.dispatch(type, p));
+      await maybeDispatchBillingAlert(ctx.claims.appId, (type, p) => ctx.dispatch(type, p));
       break;
     }
 
@@ -455,7 +494,7 @@ export async function handleClientMessage(ctx: HandlerContext) {
           await ctx.forceLeaveRoom(roomId, memberId, "room_ended");
         }
       }
-      await ctx.rooms.leave(roomId, userId);
+      await ctx.forceLeaveRoom(roomId, userId, "room_ended");
       ctx.roomRoles.clearRoom(roomId);
       ctx.dispatch("room.ended", { roomId, byUserId: userId });
       break;
@@ -479,7 +518,7 @@ export async function handleClientMessage(ctx: HandlerContext) {
         requestId: message.requestId,
       });
       ctx.dispatch("recording.ready", { ...payload, userId, recordingId: saved.id });
-      void maybeDispatchBillingAlert(ctx.claims.appId, (type, p) => ctx.dispatch(type, p));
+      await maybeDispatchBillingAlert(ctx.claims.appId, (type, p) => ctx.dispatch(type, p));
       break;
     }
 
@@ -494,7 +533,7 @@ export async function handleClientMessage(ctx: HandlerContext) {
       if (payload.qualityLabel === "poor") {
         ctx.dispatch("call.quality.degraded", { ...payload, userId });
       }
-      void maybeDispatchBillingAlert(ctx.claims.appId, (type, p) => ctx.dispatch(type, p));
+      await maybeDispatchBillingAlert(ctx.claims.appId, (type, p) => ctx.dispatch(type, p));
       break;
     }
 

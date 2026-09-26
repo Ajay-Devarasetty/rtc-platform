@@ -2,7 +2,7 @@
 
 Pin this file in Cursor. **Billing, payments, VM deploy, and commercial plans are excluded** — this list is only what’s needed to make the RTC product itself fully work like Agora/Zego.
 
-**Last updated:** 2026-09-03  
+**Last updated:** 2026-09-05  
 **How to use:** Say *"fix item #N from CHECKLIST.md"* — we update this file after each completion.
 
 ---
@@ -14,15 +14,15 @@ Pin this file in Cursor. **Billing, payments, VM deploy, and commercial plans ar
 | Token auth + app registry | ✅ | ✅ | ✅ |
 | Room join/leave + presence | ✅ | ✅ | ✅ |
 | Text chat | ✅ | ✅ | ✅ |
-| Chat history (paginated) | ✅ | ❌ | ❌ |
 | 1:1 voice call (P2P) | ✅ | ✅ | ✅ |
 | 1:1 video call (P2P) | ✅ | ✅ | ✅ |
-| 1:1 voice/video via SFU | ✅ | ❌ | ❌ |
-| Group voice (SFU) | ✅ | ❌ | ❌ |
-| Group video (SFU) | ✅ | ❌ | ❌ |
+| 1:1 voice/video via SFU | ✅ | ✅ | ✅ |
+| Group voice (SFU) | ✅ | ✅ | ✅ |
+| Group video (SFU) | ✅ | ✅ | ✅ |
 | Screen share | ✅ | ❌ | ❌ |
 | Mute mic/camera, flip camera | ✅ | ✅ | ✅ |
 | Client-side recording (both parties) | ✅ | ❌ | ❌ |
+| Chat history (paginated) | ✅ | ✅ | ✅ |
 | Recording upload + transcript/summary | ✅ | — | — |
 | Call quality metrics | ✅ | ❌ | ❌ |
 | Webhooks + event log | ✅ | — | — |
@@ -75,8 +75,8 @@ Pin this file in Cursor. **Billing, payments, VM deploy, and commercial plans ar
 
 | # | Item | Status |
 |---|------|--------|
-| 6 | **Mobile SFU** (group voice + video) | `[ ]` |
-| 7 | **Push / VoIP for incoming calls** (FCM + APNs) | `[ ]` |
+| 6 | **Mobile SFU** (group voice + video) | `[x]` |
+| 7 | **Push / VoIP for incoming calls** (FCM + APNs) | `[x]` |
 
 ---
 
@@ -110,7 +110,7 @@ Pin this file in Cursor. **Billing, payments, VM deploy, and commercial plans ar
 
 ```
 Phase A — Core reliability          ✅ DONE
-Phase B — Mobile (ride apps)          ✅ MOSTLY DONE (iOS SFU needs mediasoup-swift)
+Phase B — Mobile (ride apps)          ✅ DONE
 Phase C — Agora/Zego advanced         ✅ DONE (#9–#14, #16–#17)
 Phase D — Scale & more platforms      ✅ DONE (#15, #21, #22)
 ```
@@ -121,7 +121,7 @@ Phase D — Scale & more platforms      ✅ DONE (#15, #21, #22)
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 6 | **Mobile SFU** (group voice + video) | `[~]` | **Android ✅** full via mediasoup-client; **iOS 🔜** needs mediasoup-client-swift |
+| 6 | **Mobile SFU** (group voice + video) | `[x]` | Android + iOS via mediasoup-client-swift 0.13.2 |
 | 7 | **Push / VoIP** (FCM + APNs guide + hooks) | `[x]` | `docs/PUSH.md` + `IncomingCallNotifier` on both platforms |
 | 19 | **Mobile call recording** | `[x]` | Local mic recording during calls (Android + iOS) |
 | 20 | **Mobile chat history API** | `[x]` | `getMessageHistory()` on Android + iOS |
@@ -135,7 +135,7 @@ Phase D — Scale & more platforms      ✅ DONE (#15, #21, #22)
 | 2026-09-03 | **Phase A** — two-party recording, SDK build fix, SFU auth, auto-reconnect, call busy, tests |
 | 2026-09-03 | **Phase B** — Android SFU, chat history, push hooks/docs, mobile recording; iOS SFU partial |
 | 2026-09-03 | **Phase C** — cloud recording, per-session TURN, room roles, moderation, live broadcast, simulcast, H.264 |
-| 2026-09-03 | **Phase D** — RTMP/HLS CDN streaming, React Native SDK, Flutter SDK |
+| 2026-09-05 | **#6 iOS SFU** — full `SfuMediaEngine` via mediasoup-client-swift 0.13.2 |
 
 ---
 

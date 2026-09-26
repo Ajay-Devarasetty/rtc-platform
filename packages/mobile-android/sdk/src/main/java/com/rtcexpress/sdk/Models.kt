@@ -27,7 +27,8 @@ data class RoomMessage(
     val roomId: String,
     val fromUserId: String,
     val text: String,
-    val sentAt: Long
+    val sentAt: Long,
+    val clientMsgId: String = ""
 )
 
 data class CallInvite(

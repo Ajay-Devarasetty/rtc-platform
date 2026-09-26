@@ -1,3 +1,4 @@
+import { scopedRooms, scopedRoles } from "../tenant-scope.js";
 import type { FastifyInstance } from "fastify";
 import {
   getActiveCdnStream,
@@ -8,7 +9,8 @@ import {
 import { canModerate } from "../room-roles.js";
 import type { RoomRoleStore } from "../room-roles.js";
 import type { RoomStore } from "../store/types.js";
-import { requireUser } from "../user-auth.js";
+import { requireRoomUser } from "../room-access.js";
+import { checkAppFeature } from "../plan-features.js";
 import { requireAdmin } from "./admin.js";
 
 export async function registerCdnStreamRoutes(
@@ -22,19 +24,21 @@ export async function registerCdnStreamRoutes(
   app.post<{ Params: { roomId: string } }>(
     "/v1/rooms/:roomId/cdn-stream/start",
     async (req, reply) => {
-      const claims = requireUser(req, reply, deps.jwtSecret);
+      const claims = await requireRoomUser(req, reply, deps.jwtSecret, deps.rooms, req.params.roomId);
       if (!claims) return;
       const roomId = req.params.roomId;
       if (claims.roomId && claims.roomId !== roomId) {
         return reply.status(403).send({ error: "Token is not valid for this room" });
       }
-      if (!(await deps.rooms.isMember(roomId, claims.userId))) {
+      if (!(await scopedRooms(deps.rooms, claims.appId).isMember(roomId, claims.userId))) {
         return reply.status(403).send({ error: "Join the room first" });
       }
-      if (!canModerate(deps.roomRoles.get(roomId, claims.userId))) {
+      if (!canModerate(scopedRoles(deps.roomRoles, claims.appId).get(roomId, claims.userId))) {
         return reply.status(403).send({ error: "Only the room host can start CDN streaming" });
       }
       try {
+        const feature = await checkAppFeature(claims.appId, "groupVideo");
+        if (!feature.allowed) return reply.status(403).send({ error: feature.message });
         const session = await startCdnStream(
           claims.appId,
           roomId,
@@ -52,10 +56,10 @@ export async function registerCdnStreamRoutes(
   app.post<{ Params: { roomId: string } }>(
     "/v1/rooms/:roomId/cdn-stream/stop",
     async (req, reply) => {
-      const claims = requireUser(req, reply, deps.jwtSecret);
+      const claims = await requireRoomUser(req, reply, deps.jwtSecret, deps.rooms, req.params.roomId);
       if (!claims) return;
       const roomId = req.params.roomId;
-      if (!canModerate(deps.roomRoles.get(roomId, claims.userId))) {
+      if (!canModerate(scopedRoles(deps.roomRoles, claims.appId).get(roomId, claims.userId))) {
         return reply.status(403).send({ error: "Only the room host can stop CDN streaming" });
       }
       try {
@@ -74,9 +78,9 @@ export async function registerCdnStreamRoutes(
   );
 
   app.get<{ Params: { roomId: string } }>("/v1/rooms/:roomId/cdn-stream", async (req, reply) => {
-    const claims = requireUser(req, reply, deps.jwtSecret);
+    const claims = await requireRoomUser(req, reply, deps.jwtSecret, deps.rooms, req.params.roomId);
     if (!claims) return;
-    const session = getActiveCdnStream(req.params.roomId);
+    const session = getActiveCdnStream(req.params.roomId, claims.appId);
     return { active: session };
   });
 

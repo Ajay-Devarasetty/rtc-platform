@@ -1,4 +1,5 @@
 import 'dart:async';
+export 'video_view.dart';
 
 import 'package:flutter/services.dart';
 
@@ -90,8 +91,14 @@ class RTCExpress {
     await _channel.invokeMethod('joinRoom', {'roomId': roomId});
   }
 
-  Future<void> sendMessage(String text) async {
-    await _channel.invokeMethod('sendMessage', {'text': text});
+  Future<void> sendMessage(String text, {String? clientMsgId}) async {
+    await _channel.invokeMethod('sendMessage', {'text': text, if (clientMsgId != null) 'clientMsgId': clientMsgId});
+  }
+
+  /// Android history bridge; call after the roomJoined event.
+  Future<Map<String, dynamic>> getHistory(String roomId, {String? before}) async {
+    final result = await _channel.invokeMapMethod<String, dynamic>('getHistory', {'roomId': roomId, if (before != null) 'before': before});
+    return result ?? <String, dynamic>{};
   }
 
   Future<void> callUser(String peerUserId, {bool video = false}) async {

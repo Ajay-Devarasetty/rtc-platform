@@ -1,3 +1,4 @@
+import { tenantKey } from "./tenant-scope.js";
 import { randomUUID } from "crypto";
 import { issueToken } from "./auth.js";
 
@@ -33,7 +34,7 @@ export async function startCdnStream(
   startedBy: string,
   jwtSecret?: string
 ): Promise<CdnStreamSession> {
-  if (activeByRoom.has(roomId)) {
+  if (activeByRoom.has(tenantKey(appId, roomId))) {
     throw new Error("CDN stream already active for this room");
   }
 
@@ -57,29 +58,36 @@ export async function startCdnStream(
   };
 
   sessions.set(id, session);
-  activeByRoom.set(roomId, id);
+  activeByRoom.set(tenantKey(appId, roomId), id);
 
-  const sfuUrl = process.env.SFU_URL?.replace(/\/$/, "");
-  if (sfuUrl) {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (jwtSecret) {
-      headers.Authorization = `Bearer ${issueToken({ appId, userId: startedBy, roomId }, jwtSecret)}`;
+  try {
+    const sfuUrl = process.env.SFU_URL?.replace(/\/$/, "");
+    if (sfuUrl) {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (jwtSecret) {
+        headers.Authorization = `Bearer ${issueToken({ appId, userId: startedBy, roomId }, jwtSecret)}`;
+      }
+      const res = await fetch(`${sfuUrl}/v1/rooms/${encodeURIComponent(roomId)}/cdn-stream/start`, {
+        method: "POST",
+        signal: AbortSignal.timeout(15000),
+        headers,
+        body: JSON.stringify({ streamKey, sessionId: id, rtmpPushUrl }),
+      });
+      if (!res.ok) {
+        activeByRoom.delete(tenantKey(appId, roomId));
+        sessions.delete(id);
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || `SFU CDN stream start failed (${res.status})`);
+      }
+      const body = (await res.json()) as { session?: { mode?: CdnStreamSession["mode"] } };
+      if (body.session?.mode) session.mode = body.session.mode;
     }
-    const res = await fetch(`${sfuUrl}/v1/rooms/${encodeURIComponent(roomId)}/cdn-stream/start`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ streamKey, sessionId: id, rtmpPushUrl }),
-    });
-    if (!res.ok) {
-      activeByRoom.delete(roomId);
-      sessions.delete(id);
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      throw new Error(body.error || `SFU CDN stream start failed (${res.status})`);
-    }
-    const body = (await res.json()) as { session?: { mode?: CdnStreamSession["mode"] } };
-    if (body.session?.mode) session.mode = body.session.mode;
+
+  } catch (error) {
+    activeByRoom.delete(tenantKey(appId, roomId));
+    sessions.delete(id);
+    throw error;
   }
-
   return session;
 }
 
@@ -89,7 +97,8 @@ export async function stopCdnStream(
   appId?: string,
   userId?: string
 ): Promise<CdnStreamSession> {
-  const sessionId = activeByRoom.get(roomId);
+  if (!appId) throw new Error("appId is required");
+  const sessionId = activeByRoom.get(tenantKey(appId, roomId));
   if (!sessionId) throw new Error("No active CDN stream for this room");
   const session = sessions.get(sessionId);
   if (!session) throw new Error("CDN stream session not found");
@@ -100,20 +109,21 @@ export async function stopCdnStream(
     if (jwtSecret && appId && userId) {
       headers.Authorization = `Bearer ${issueToken({ appId, userId, roomId }, jwtSecret)}`;
     }
-    await fetch(`${sfuUrl}/v1/rooms/${encodeURIComponent(roomId)}/cdn-stream/stop`, {
+    const res = await fetch(`${sfuUrl}/v1/rooms/${encodeURIComponent(roomId)}/cdn-stream/stop`, {
       method: "POST",
+      signal: AbortSignal.timeout(15000),
       headers,
     });
   }
 
   session.endedAt = new Date().toISOString();
   session.status = "stopped";
-  activeByRoom.delete(roomId);
+  activeByRoom.delete(tenantKey(appId, roomId));
   return session;
 }
 
-export function getActiveCdnStream(roomId: string) {
-  const id = activeByRoom.get(roomId);
+export function getActiveCdnStream(roomId: string, appId: string) {
+  const id = activeByRoom.get(tenantKey(appId, roomId));
   return id ? sessions.get(id) ?? null : null;
 }
 

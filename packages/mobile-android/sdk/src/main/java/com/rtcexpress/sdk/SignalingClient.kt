@@ -54,7 +54,7 @@ class SignalingClient(
 
     fun send(type: String, payload: JSONObject) {
         val ws = socket ?: throw IllegalStateException("Not connected")
-        ws.send(JsonUtil.clientMessage(type, payload))
+        check(ws.send(JsonUtil.clientMessage(type, payload))) { "Connection closed. Reconnect before sending." }
     }
 
     fun close() {
@@ -80,7 +80,8 @@ class SignalingClient(
                     roomId = payload.getString("roomId"),
                     fromUserId = payload.getString("fromUserId"),
                     text = payload.getString("text"),
-                    sentAt = payload.optLong("sentAt")
+                    sentAt = payload.optLong("sentAt"),
+                    clientMsgId = payload.optString("clientMsgId")
                 )
             )
             "call_invite" -> listener?.onCallInvite(

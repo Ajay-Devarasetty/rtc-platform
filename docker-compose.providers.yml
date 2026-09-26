@@ -1,0 +1,11 @@
+# Optional overlay. Configure .env.production and server-only secrets first.
+# docker compose -f docker-compose.prod.yml -f docker-compose.providers.yml --env-file .env.production up -d
+services:
+  signaling:
+    environment:
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      PUBLIC_WEBSITE_URL: ${PUBLIC_WEBSITE_URL:-}
+      FCM_CONFIG_FILE: ${FCM_CONFIG_FILE:-}
+    volumes:
+      - ./secrets:/run/rtc-secrets:ro

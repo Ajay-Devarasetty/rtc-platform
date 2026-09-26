@@ -11,7 +11,7 @@ Pod::Spec.new do |s|
     '../../mobile-ios/Sources/RTCExpress/**/*.swift'
   ]
   s.dependency 'Flutter'
-  s.dependency 'WebRTC-SDK', '~> 124.0.0'
+  s.dependency 'Mediasoup-Client-Swift', '0.13.2'
   s.platform = :ios, '15.0'
   s.swift_version = '5.9'
 end

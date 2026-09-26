@@ -5,7 +5,17 @@
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "react-native": "src/index.ts",
-  "files": ["src", "lib", "android", "ios", "react-native.config.js", "RTCExpress.podspec"],
+  "files": [
+    "src",
+    "lib",
+    "android/build.gradle",
+    "android/settings.gradle",
+    "android/src",
+    "ios/RTCExpressBridge.m",
+    "ios/RTCExpressModule.swift",
+    "react-native.config.js",
+    "RTCExpress.podspec"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepare": "npm run build"

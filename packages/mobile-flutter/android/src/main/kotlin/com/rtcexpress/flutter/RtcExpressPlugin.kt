@@ -1,6 +1,13 @@
 package com.rtcexpress.flutter
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import java.util.concurrent.Executors
+import io.flutter.plugin.platform.PlatformView
+import io.flutter.plugin.platform.PlatformViewFactory
+import io.flutter.plugin.common.StandardMessageCodec
+import com.rtcexpress.sdk.CallVideoView
 import com.rtcexpress.sdk.CallInvite
 import com.rtcexpress.sdk.CallStateUpdate
 import com.rtcexpress.sdk.RTCExpress
@@ -14,6 +21,9 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 
 class RtcExpressPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, RTCExpress.Listener {
+    private val main = Handler(Looper.getMainLooper())
+    private var worker = Executors.newSingleThreadExecutor()
+    private var attached = false
     private lateinit var channel: MethodChannel
     private lateinit var events: EventChannel
     private var eventSink: EventChannel.EventSink? = null
@@ -21,6 +31,26 @@ class RtcExpressPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, RTCExpr
     private var appContext: Context? = null
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        if (worker.isShutdown) worker = Executors.newSingleThreadExecutor()
+        attached = true
+        binding.platformViewRegistry.registerViewFactory("rtcexpress/video", object : PlatformViewFactory(StandardMessageCodec.INSTANCE) {
+            override fun create(context: Context, viewId: Int, args: Any?): PlatformView {
+                val view = CallVideoView(context).apply { local = (args as? Map<*, *>)?.get("local") == true }
+                // WRAP_CONTENT lets WebRTC's aspect-fit measurement size the
+                // renderer independently of Flutter's exact platform-view bounds.
+                val container = android.widget.FrameLayout(context).apply {
+                    setBackgroundColor(android.graphics.Color.BLACK)
+                    addView(view, android.widget.FrameLayout.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                        android.view.Gravity.CENTER))
+                }
+                return object : PlatformView {
+                    override fun getView() = container
+                    override fun dispose() { view.bind(null) }
+                }
+            }
+        })
         appContext = binding.applicationContext
         channel = MethodChannel(binding.binaryMessenger, "rtcexpress")
         channel.setMethodCallHandler(this)
@@ -38,15 +68,35 @@ class RtcExpressPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, RTCExpr
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
-        rtc?.destroy()
+        attached = false
+        events.setStreamHandler(null)
+        eventSink = null
+        val previous = rtc
         rtc = null
+        worker.execute { previous?.destroy() }
+        worker.shutdown()
     }
 
     private fun emit(event: String, data: Map<String, Any?>) {
-        eventSink?.success(mapOf("event" to event, "data" to data))
+        main.post { if (attached) eventSink?.success(mapOf("event" to event, "data" to data)) }
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
+        worker.execute {
+            val reply = object : MethodChannel.Result {
+                override fun success(value: Any?) { main.post { result.success(value) } }
+                override fun error(code: String, message: String?, details: Any?) { main.post { result.error(code, message, details) } }
+                override fun notImplemented() { main.post { result.notImplemented() } }
+            }
+            try { handle(call, reply) } catch (e: Exception) { reply.error("rtc_error", e.message, null) }
+        }
+    }
+
+    private fun handle(call: MethodCall, result: MethodChannel.Result) {
+        if (!attached) return result.error("detached", "Flutter engine detached", null)
+        if (call.method !in listOf("fetchToken", "init", "destroy") && rtc == null) {
+            return result.error("not_initialized", "Connect to a room first", null)
+        }
         when (call.method) {
             "fetchToken" -> {
                 val serverUrl = call.argument<String>("serverUrl") ?: ""
@@ -69,6 +119,7 @@ class RtcExpressPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, RTCExpr
             "init" -> {
                 val ctx = appContext ?: return result.error("no_context", "No context", null)
                 val opts = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
+                rtc?.destroy()
                 rtc = RTCExpress(ctx).also {
                     it.setListener(this)
                     it.init(
@@ -88,8 +139,14 @@ class RtcExpressPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, RTCExpr
                 result.success(null)
             }
             "sendMessage" -> {
-                rtc?.sendMessage(call.argument<String>("text") ?: "")
+                rtc?.sendMessage(call.argument<String>("text") ?: "", call.argument<String>("clientMsgId") ?: "")
                 result.success(null)
+            }
+            "getHistory" -> {
+                val page = rtc!!.getMessageHistory(call.argument<String>("roomId") ?: "", call.argument<String>("before"))
+                result.success(mapOf("nextCursor" to page.nextCursor, "messages" to page.messages.map {
+                    mapOf("id" to it.id, "fromUserId" to it.fromUserId, "text" to it.text, "sentAt" to it.sentAt, "clientMsgId" to it.clientMsgId)
+                }))
             }
             "callUser" -> {
                 rtc?.callUser(
@@ -124,7 +181,8 @@ class RtcExpressPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, RTCExpr
             "roomId" to message.roomId,
             "fromUserId" to message.fromUserId,
             "text" to message.text,
-            "sentAt" to message.sentAt
+            "sentAt" to message.sentAt,
+            "clientMsgId" to message.clientMsgId
         ))
     override fun onCallInvite(invite: CallInvite) =
         emit("callInvite", mapOf(
@@ -143,5 +201,6 @@ class RtcExpressPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, RTCExpr
         ))
     override fun onRemoteVideo(track: org.webrtc.VideoTrack) =
         emit("remoteVideo", mapOf("trackId" to track.id()))
+    override fun onDiagnostics(message: String) = emit("diagnostics", mapOf("message" to message))
     override fun onError(message: String) = emit("error", mapOf("message" to message))
 }

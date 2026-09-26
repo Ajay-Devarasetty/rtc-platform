@@ -20,6 +20,7 @@ class RTCExpress(private val context: Context) : SignalingClient.Listener {
         fun onRecordingStarted() {}
         fun onRecordingStopped(result: RecordingResult) {}
         fun onError(message: String) {}
+        fun onDiagnostics(message: String) {}
     }
 
     private val signaling = SignalingClient()
@@ -40,10 +41,13 @@ class RTCExpress(private val context: Context) : SignalingClient.Listener {
 
     private var mediaModePref = "p2p"
     private var sfuUrl: String? = null
+    private var iceServers = listOf(org.webrtc.PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer())
     private var inVoiceRoom = false
     private var inVideoRoom = false
 
     private var activeCall: ActiveCall? = null
+    private var signalingReady = false
+    private var pendingJoinRoomId: String? = null
 
     private data class ActiveCall(
         val callId: String,
@@ -66,7 +70,10 @@ class RTCExpress(private val context: Context) : SignalingClient.Listener {
         appId = options.appId
         userId = options.userId
         token = options.token
+        runCatching { configClient.fetchIceServers(serverUrl, token) }
+            .onSuccess { if (it.isNotEmpty()) iceServers = it }
         mediaModePref = options.mediaMode
+        signalingReady = false
         signaling.listener = this
         signaling.connect(serverUrl, options.token)
         runCatching {
@@ -77,14 +84,23 @@ class RTCExpress(private val context: Context) : SignalingClient.Listener {
 
     fun joinRoom(roomId: String) {
         this.roomId = roomId
-        signaling.send("join_room", JSONObject().put("roomId", roomId))
+        pendingJoinRoomId = roomId
+        flushJoinRoom()
     }
 
-    fun sendMessage(text: String) {
+    private fun flushJoinRoom() {
+        val id = pendingJoinRoomId ?: return
+        if (!signalingReady) return
+        signaling.send("join_room", JSONObject().put("roomId", id))
+    }
+
+    fun sendMessage(text: String, clientMsgId: String = "") {
         val room = roomId ?: throw IllegalStateException("Join a room first")
         signaling.send(
             "send_message",
-            JSONObject().put("roomId", room).put("text", text)
+            JSONObject().put("roomId", room).put("text", text).apply {
+                if (clientMsgId.isNotBlank()) put("clientMsgId", clientMsgId)
+            }
         )
     }
 
@@ -243,6 +259,7 @@ class RTCExpress(private val context: Context) : SignalingClient.Listener {
         endCall()
         leaveVoiceRoom()
         leaveVideoRoom()
+        signaling.listener = null
         signaling.close()
         p2p?.destroy()
         p2p = null
@@ -255,15 +272,27 @@ class RTCExpress(private val context: Context) : SignalingClient.Listener {
     }
 
     override fun onConnected(userId: String) {
+        signalingReady = true
+        flushJoinRoom()
         listener?.onConnected(userId)
     }
 
     override fun onDisconnected() {
+        signalingReady = false
+        cleanupCall("ended")
         listener?.onDisconnected()
     }
 
     override fun onRoomJoined(roomId: String, members: List<String>) {
         listener?.onRoomJoined(roomId, members)
+    }
+
+    override fun onUserJoined(roomId: String, userId: String) {
+        // Presence updates are surfaced via onRoomJoined for now.
+    }
+
+    override fun onUserLeft(roomId: String, userId: String) {
+        // No-op — room membership is refreshed on the next join.
     }
 
     override fun onMessage(message: RoomMessage) {
@@ -316,18 +345,16 @@ class RTCExpress(private val context: Context) : SignalingClient.Listener {
     }
 
     override fun onWebRtcOffer(payload: JSONObject) {
+        val call = activeCall ?: return
+        if (payload.optString("callId") != call.callId) return
         ensureP2p(activeCall?.callType == "video")
         p2p?.handleOffer(payload)
-        activeCall?.let {
-            emitCallState("connected", it.peerUserId, it.roomId, it.callId, it.callType)
-        }
     }
 
     override fun onWebRtcAnswer(payload: JSONObject) {
+        val call = activeCall ?: return
+        if (payload.optString("callId") != call.callId) return
         p2p?.handleAnswer(payload)
-        activeCall?.let {
-            emitCallState("connected", it.peerUserId, it.roomId, it.callId, it.callType)
-        }
     }
 
     override fun onWebRtcIceCandidate(payload: JSONObject) {
@@ -339,7 +366,7 @@ class RTCExpress(private val context: Context) : SignalingClient.Listener {
     }
 
     override fun onError(message: String, code: String?) {
-        if (code == "call_busy" && activeCall?.isCaller == true) {
+        if (code in listOf("call_busy", "user_offline") && activeCall?.isCaller == true) {
             cleanupCall("rejected")
         }
         listener?.onError(message)
@@ -377,16 +404,31 @@ class RTCExpress(private val context: Context) : SignalingClient.Listener {
     }
 
     private fun ensureP2p(video: Boolean) {
+        WebRtcPeerFactory.warmUp(context)
         if (p2p == null) {
             p2p = P2pMediaEngine(
                 context = context,
                 userId = userId,
+                iceServers = iceServers,
                 sendSignaling = { type, payload -> signaling.send(type, payload) },
                 activeCall = {
                     activeCall?.let { it.callId to it.peerUserId }
                 }
             ).also {
                 it.onRemoteVideoTrack = { track -> listener?.onRemoteVideo(track) }
+                it.onDiagnostics = { message -> listener?.onDiagnostics(message) }
+                it.onConnectionState = { state ->
+                    activeCall?.let { call ->
+                        if (state == "failed") {
+                            endCall()
+                            listener?.onError("Media connection failed. Try another network.")
+                        } else emitCallState(state, call.peerUserId, call.roomId, call.callId, call.callType)
+                    }
+                }
+                it.onError = { message ->
+                    endCall()
+                    listener?.onError(message)
+                }
             }
         }
         p2p?.prepare(video)

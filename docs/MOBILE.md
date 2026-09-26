@@ -7,7 +7,7 @@ Native mobile SDKs for RTCExpress — same signaling server and token flow as th
 | Platform | Path | Status |
 |----------|------|--------|
 | **Android** | `packages/mobile-android` | P2P + SFU chat/voice/video |
-| **iOS** | `packages/mobile-ios` | P2P chat/voice/video; SFU via mediasoup-swift (see below) |
+| **iOS** | `packages/mobile-ios` | P2P + SFU chat/voice/video |
 | **Web** | `packages/sdk` | Full (P2P + SFU + recording) |
 
 ## Architecture
@@ -20,7 +20,7 @@ Your mobile app
     ├─ WebSocket /ws?token=JWT  (signaling — chat, calls)
     │
     ├─ WebRTC P2P  (1:1 voice/video)
-    └─ mediasoup SFU  (group voice/video — Android full, iOS see MOBILE-SFU.md)
+    └─ mediasoup SFU  (group voice/video — Android + iOS)
 ```
 
 ## Feature parity
@@ -31,9 +31,9 @@ Your mobile app
 | Chat history (REST) | ✅ | ✅ | ✅ |
 | 1:1 voice (P2P) | ✅ | ✅ | ✅ |
 | 1:1 video (P2P) | ✅ | ✅ | ✅ |
-| 1:1 via SFU (`mediaMode: auto`) | ✅ | ✅ | 🔜 |
-| Group voice (SFU) | ✅ | ✅ | 🔜 |
-| Group video (SFU) | ✅ | ✅ | 🔜 |
+| 1:1 via SFU (`mediaMode: auto`) | ✅ | ✅ | ✅ |
+| Group voice (SFU) | ✅ | ✅ | ✅ |
+| Group video (SFU) | ✅ | ✅ | ✅ |
 | Call recording (local mic) | ✅ | ✅ | ✅ |
 | Flip camera | ✅ | ✅ | ✅ |
 | Push / background calls | — | [Guide](PUSH.md) | [Guide](PUSH.md) |
@@ -56,8 +56,9 @@ val result = rtc.stopRecording()
 ### iOS
 
 ```swift
-rtc.initClient(RTCInitOptions(serverUrl: url, appId: appId, userId: userId, token: token))
+rtc.initClient(RTCInitOptions(serverUrl: url, appId: appId, userId: userId, token: token, mediaMode: "auto"))
 rtc.joinRoom("ride-123")
+try await rtc.joinVoiceRoom()
 let page = try await rtc.getMessageHistory("ride-123")
 try rtc.callUser("driver-9", video: false)
 try rtc.startRecording()

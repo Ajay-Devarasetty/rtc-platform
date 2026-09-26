@@ -138,6 +138,10 @@ export function getPlanFeatures(plan: BillingPlan): PlanFeatures {
   return BILLING_PLANS[plan].features;
 }
 
+export function isBillingPlan(value: unknown): value is BillingPlan {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(BILLING_PLANS, value);
+}
+
 export interface UsageBreakdown {
   callMinutes: number;
   messagesSent: number;
@@ -230,7 +234,9 @@ export function computeBillingSummary(
       transcriptionMinutes: limitStatus(usage.transcriptionMinutes, limits.transcriptionMinutes),
       qualityReports: limitStatus(usage.qualityReports, limits.qualityReports),
     },
-    estimatedCostUsd: roundUsd(baseCost + overageCost),
+    // The usage estimate already includes units above the limit. Overage is
+    // a breakdown of that estimate, not a second charge for the same units.
+    estimatedCostUsd: roundUsd(baseCost),
     overageCostUsd: roundUsd(overageCost),
   };
 }

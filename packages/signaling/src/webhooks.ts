@@ -202,6 +202,8 @@ async function deliverWithRetry(
     try {
       const signature = signPayload(webhook.secret, body);
       const res = await fetch(webhook.url, {
+        signal: AbortSignal.timeout(5000),
+        redirect: "error",
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -240,6 +242,6 @@ export async function dispatchEvent(appId: string, type: string, payload: Record
   });
 
   for (const webhook of webhooks) {
-    void deliverWithRetry(webhook, body, event?.id ?? null);
+    void deliverWithRetry(webhook, body, event?.id ?? null).catch(() => console.error("Webhook delivery logging failed"));
   }
 }

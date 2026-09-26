@@ -1,4 +1,5 @@
 import { getPool } from "./db.js";
+import { currentMonth } from "./usage-period.js";
 import { getAppPlan } from "./apps.js";
 import {
   type BillingPlan,
@@ -43,16 +44,13 @@ async function getUsageBreakdown(
     const recResult = await db.query(
       `SELECT
          COUNT(*)::int AS count,
-         COALESCE(SUM(duration_ms), 0)::bigint AS total_ms,
-         COUNT(*) FILTER (WHERE transcript IS NOT NULL)::int AS transcribed
+         COALESCE(SUM(duration_ms) FILTER (WHERE transcript IS NOT NULL), 0)::bigint AS transcribed_ms
        FROM recordings WHERE ${recFilter}`,
       recParams
     );
     recordings = recResult.rows[0]?.count ?? 0;
-    const transcribedMs = Number(recResult.rows[0]?.total_ms ?? 0);
-    const transcribedCount = recResult.rows[0]?.transcribed ?? 0;
-    transcriptionMinutes =
-      transcribedCount > 0 ? Math.round((transcribedMs / 60_000) * 100) / 100 : 0;
+    const transcribedMs = Number(recResult.rows[0]?.transcribed_ms ?? 0);
+    transcriptionMinutes = Math.round((transcribedMs / 60_000) * 100) / 100;
   } else {
     recordings = await countRecordingsForApp(appId, opts);
     transcriptionMinutes = 0;
@@ -92,7 +90,7 @@ export async function maybeDispatchBillingAlert(
   const now = Date.now();
   if (now - (lastAlertAt.get(key) ?? 0) < ALERT_COOLDOWN_MS) return;
 
-  const summary = await getBillingSummary(appId);
+  const summary = await getBillingSummary(appId, currentMonth());
   const alerts = checkThresholdAlerts(summary);
   if (!alerts.length) return;
 

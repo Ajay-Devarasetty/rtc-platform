@@ -8,12 +8,14 @@ let package = Package(
         .library(name: "RTCExpress", targets: ["RTCExpress"])
     ],
     dependencies: [
-        .package(url: "https://github.com/stasel/WebRTC.git", .upToNextMajor(from: "124.0.0"))
+        .package(url: "https://github.com/VLprojects/mediasoup-client-swift.git", exact: "0.13.2")
     ],
     targets: [
         .target(
             name: "RTCExpress",
-            dependencies: [.product(name: "WebRTC", package: "WebRTC")]
+            dependencies: [
+                .product(name: "Mediasoup", package: "Mediasoup-Client-Swift")
+            ]
         )
     ]
 )

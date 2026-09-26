@@ -100,9 +100,18 @@ public final class RTCExpress: SignalingListener {
         guard let roomId else { throw NSError(domain: "RTCExpress", code: 3) }
         guard let sfuUrl else { throw NSError(domain: "RTCExpress", code: 32, userInfo: [NSLocalizedDescriptionKey: "SFU not available"]) }
         if sfu == nil {
-            sfu = SfuMediaEngine(sfuUrl: sfuUrl, userId: userId, authToken: token) { [weak self] type, payload in
-                try self?.signaling.send(type: type, payload: payload)
-            }
+            sfu = SfuMediaEngine(
+                sfuUrl: sfuUrl,
+                userId: userId,
+                authToken: token,
+                sendSignaling: { [weak self] type, payload in
+                    try self?.signaling.send(type: type, payload: payload)
+                },
+                onRemoteVideo: { [weak self] track in
+                    guard let self else { return }
+                    self.delegate?.rtcExpress(self, remoteVideoTrack: track)
+                }
+            )
         }
         try await sfu?.joinRoom(roomId: roomId, options: SfuJoinOptions(audio: true, video: false, announceToRoom: true))
         inVoiceRoom = true
@@ -128,9 +137,18 @@ public final class RTCExpress: SignalingListener {
         guard let roomId else { throw NSError(domain: "RTCExpress", code: 3) }
         guard let sfuUrl else { throw NSError(domain: "RTCExpress", code: 32) }
         if sfu == nil {
-            sfu = SfuMediaEngine(sfuUrl: sfuUrl, userId: userId, authToken: token) { [weak self] type, payload in
-                try self?.signaling.send(type: type, payload: payload)
-            }
+            sfu = SfuMediaEngine(
+                sfuUrl: sfuUrl,
+                userId: userId,
+                authToken: token,
+                sendSignaling: { [weak self] type, payload in
+                    try self?.signaling.send(type: type, payload: payload)
+                },
+                onRemoteVideo: { [weak self] track in
+                    guard let self else { return }
+                    self.delegate?.rtcExpress(self, remoteVideoTrack: track)
+                }
+            )
         }
         try await sfu?.joinRoom(roomId: roomId, options: SfuJoinOptions(audio: true, video: true, announceToRoom: true))
         inVoiceRoom = true
@@ -204,9 +222,15 @@ public final class RTCExpress: SignalingListener {
 
     public var isRecording: Bool { callRecorder.isRecording }
 
-    public func muteMicrophone(_ muted: Bool) { p2p?.muteMicrophone(muted) }
-    public func muteCamera(_ muted: Bool) { p2p?.muteCamera(muted) }
-    public func switchCamera() { p2p?.switchCamera() }
+    public func muteMicrophone(_ muted: Bool) {
+        if sfu != nil { sfu?.muteMicrophone(muted) } else { p2p?.muteMicrophone(muted) }
+    }
+    public func muteCamera(_ muted: Bool) {
+        if sfu != nil { sfu?.muteCamera(muted) } else { p2p?.muteCamera(muted) }
+    }
+    public func switchCamera() {
+        if sfu != nil { sfu?.switchCamera() } else { p2p?.switchCamera() }
+    }
 
     public func destroy() {
         try? endCall()
@@ -282,9 +306,18 @@ public final class RTCExpress: SignalingListener {
     private func startSfuCall(_ call: ActiveCall) async throws {
         guard let sfuUrl else { throw NSError(domain: "RTCExpress", code: 32) }
         if sfu == nil {
-            sfu = SfuMediaEngine(sfuUrl: sfuUrl, userId: userId, authToken: token) { [weak self] type, payload in
-                try self?.signaling.send(type: type, payload: payload)
-            }
+            sfu = SfuMediaEngine(
+                sfuUrl: sfuUrl,
+                userId: userId,
+                authToken: token,
+                sendSignaling: { [weak self] type, payload in
+                    try self?.signaling.send(type: type, payload: payload)
+                },
+                onRemoteVideo: { [weak self] track in
+                    guard let self else { return }
+                    self.delegate?.rtcExpress(self, remoteVideoTrack: track)
+                }
+            )
         }
         let sfuRoomId = "\(call.roomId)-call-\(call.callId)"
         try await sfu?.joinRoom(

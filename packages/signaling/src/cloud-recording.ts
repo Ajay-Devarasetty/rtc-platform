@@ -1,3 +1,4 @@
+import { tenantKey } from "./tenant-scope.js";
 import { randomUUID } from "crypto";
 import { mkdir, writeFile } from "fs/promises";
 import path from "path";
@@ -24,7 +25,7 @@ export async function startCloudRecording(
   recordingsDir: string,
   jwtSecret?: string
 ): Promise<CloudRecordingSession> {
-  if (activeByRoom.has(roomId)) {
+  if (activeByRoom.has(tenantKey(appId, roomId))) {
     throw new Error("Cloud recording already active for this room");
   }
   const id = randomUUID();
@@ -40,28 +41,36 @@ export async function startCloudRecording(
     filePath: null,
   };
   sessions.set(id, session);
-  activeByRoom.set(roomId, id);
+  activeByRoom.set(tenantKey(appId, roomId), id);
 
-  const sfuUrl = process.env.SFU_URL?.replace(/\/$/, "");
-  if (sfuUrl) {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (jwtSecret) {
-      headers.Authorization = `Bearer ${issueToken({ appId, userId: startedBy, roomId }, jwtSecret)}`;
+  try {
+    const sfuUrl = process.env.SFU_URL?.replace(/\/$/, "");
+    if (!sfuUrl) throw new Error("SFU_URL is required for cloud recording");
+    await mkdir(recordingsDir, { recursive: true });
+    if (sfuUrl) {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (jwtSecret) {
+        headers.Authorization = `Bearer ${issueToken({ appId, userId: startedBy, roomId }, jwtSecret)}`;
+      }
+      const res = await fetch(`${sfuUrl}/v1/rooms/${encodeURIComponent(roomId)}/recording/start`, {
+        method: "POST",
+        signal: AbortSignal.timeout(15000),
+        headers,
+        body: JSON.stringify({ sessionId: id }),
+      });
+      if (!res.ok) {
+        activeByRoom.delete(tenantKey(appId, roomId));
+        sessions.delete(id);
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || `SFU recording start failed (${res.status})`);
+      }
     }
-    const res = await fetch(`${sfuUrl}/v1/rooms/${encodeURIComponent(roomId)}/recording/start`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ sessionId: id }),
-    });
-    if (!res.ok) {
-      activeByRoom.delete(roomId);
-      sessions.delete(id);
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      throw new Error(body.error || `SFU recording start failed (${res.status})`);
-    }
+
+  } catch (error) {
+    activeByRoom.delete(tenantKey(appId, roomId));
+    sessions.delete(id);
+    throw error;
   }
-
-  await mkdir(recordingsDir, { recursive: true });
   return session;
 }
 
@@ -72,7 +81,8 @@ export async function stopCloudRecording(
   appId?: string,
   userId?: string
 ): Promise<CloudRecordingSession> {
-  const sessionId = activeByRoom.get(roomId);
+  if (!appId) throw new Error("appId is required");
+  const sessionId = activeByRoom.get(tenantKey(appId, roomId));
   if (!sessionId) throw new Error("No active cloud recording for this room");
   const session = sessions.get(sessionId);
   if (!session) throw new Error("Recording session not found");
@@ -86,9 +96,11 @@ export async function stopCloudRecording(
     }
     const res = await fetch(`${sfuUrl}/v1/rooms/${encodeURIComponent(roomId)}/recording/stop`, {
       method: "POST",
+      signal: AbortSignal.timeout(15000),
       headers,
       body: JSON.stringify({ sessionId }),
     });
+    if (!res.ok) throw new Error(`SFU recording stop failed (${res.status})`);
     if (res.ok) {
       const body = (await res.json()) as { filePath?: string; dataBase64?: string };
       if (body.filePath) {
@@ -103,12 +115,12 @@ export async function stopCloudRecording(
   session.endedAt = new Date().toISOString();
   session.status = "completed";
   session.filePath = filePath;
-  activeByRoom.delete(roomId);
+  activeByRoom.delete(tenantKey(appId, roomId));
   return session;
 }
 
-export function getActiveCloudRecording(roomId: string) {
-  const id = activeByRoom.get(roomId);
+export function getActiveCloudRecording(roomId: string, appId: string) {
+  const id = activeByRoom.get(tenantKey(appId, roomId));
   return id ? sessions.get(id) ?? null : null;
 }
 

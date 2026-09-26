@@ -7,6 +7,7 @@ import {
   markCallConnected,
   registerRinging,
   resetCallState,
+  expireRingingCalls,
 } from "./call-state.js";
 
 describe("call-state", () => {
@@ -37,9 +38,9 @@ describe("call-state", () => {
 
   it("marks a call connected and clears both users on end", () => {
     registerRinging("app1", "call-1", "room-1", "alice", "bob");
-    markCallConnected("call-1");
+    markCallConnected("app1", "call-1");
     assert.equal(findUserCall("app1", "alice")?.phase, "connected");
-    clearCall("call-1");
+    clearCall("app1", "call-1");
     assert.equal(findUserCall("app1", "alice"), null);
     assert.equal(findUserCall("app1", "bob"), null);
   });
@@ -49,5 +50,29 @@ describe("call-state", () => {
     clearUserCalls("app1", "alice");
     assert.equal(findUserCall("app1", "alice"), null);
     assert.equal(findUserCall("app1", "bob"), null);
+  });
+
+  it("isolates reused call IDs across customers", () => {
+    registerRinging("app1", "same", "room", "alice", "bob");
+    registerRinging("app2", "same", "room", "alice", "bob");
+    markCallConnected("app1", "same");
+    assert.equal(findUserCall("app2", "alice")?.phase, "ringing");
+    clearCall("app1", "same");
+    assert.equal(findUserCall("app2", "alice")?.callId, "same");
+  });
+
+  it("does not overwrite a call ID already used by other participants", () => {
+    registerRinging("app1", "same", "room", "alice", "bob");
+    assert.equal(registerRinging("app1", "same", "room", "carol", "dave").ok, false);
+    assert.equal(findUserCall("app1", "alice")?.calleeUserId, "bob");
+  });
+
+  it("expires unanswered calls but preserves connected calls", () => {
+    registerRinging("app1", "ringing", "room", "alice", "bob");
+    registerRinging("app1", "connected", "room", "carol", "dave");
+    markCallConnected("app1", "connected");
+    assert.equal(expireRingingCalls(Date.now() + 61_000).length, 1);
+    assert.equal(findUserCall("app1", "alice"), null);
+    assert.equal(findUserCall("app1", "carol")?.phase, "connected");
   });
 });

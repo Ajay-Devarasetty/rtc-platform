@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { BillingPlan } from "../billing-plans.js";
+import { isBillingPlan } from "../billing-plans.js";
 import { BILLING_PLANS, getBillingSummary } from "../billing.js";
 import { setAppPlan } from "../apps.js";
 import { requireAdmin } from "./admin.js";
@@ -31,7 +32,7 @@ export async function registerBillingRoutes(app: FastifyInstance) {
     async (req, reply) => {
       if (!requireAdmin(req, reply)) return;
       const plan = req.body?.plan;
-      if (!plan || !(plan in BILLING_PLANS)) {
+      if (!isBillingPlan(plan)) {
         return reply.status(400).send({ error: "Valid plan required: free, starter, pro" });
       }
       try {

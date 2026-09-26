@@ -10,7 +10,9 @@ export function getIceConfig(opts: { userId?: string; ttlSec?: number } = {}): I
   ];
 
   const turnUrl = process.env.TURN_URL;
-  const turnSecret = process.env.TURN_PASSWORD || process.env.TURN_STATIC_AUTH_SECRET;
+  // REST/HMAC credentials only work when coturn uses --use-auth-secret.
+  // The default compose deployment uses --user and requires static credentials.
+  const turnSecret = process.env.TURN_STATIC_AUTH_SECRET;
   if (!turnUrl) return { iceServers };
 
   if (turnSecret && opts.userId) {
@@ -25,7 +27,7 @@ export function getIceConfig(opts: { userId?: string; ttlSec?: number } = {}): I
   iceServers.push({
     urls: turnUrl,
     username: process.env.TURN_USERNAME || "rtc",
-    credential: turnSecret || "rtc-turn-secret",
+    credential: process.env.TURN_PASSWORD || "rtc-turn-secret",
   });
   return { iceServers };
 }

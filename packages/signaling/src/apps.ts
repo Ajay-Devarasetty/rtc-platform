@@ -156,6 +156,7 @@ export async function seedDemoApp() {
       `UPDATE apps SET name = $2, plan = 'pro', secret_hash = $3, active = TRUE WHERE app_id = $1`,
       [appId, "Demo Application", secretHash]
     );
+    console.log(`Updated demo app: ${appId}`);
     return;
   }
 

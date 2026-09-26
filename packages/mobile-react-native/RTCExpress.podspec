@@ -18,5 +18,5 @@ Pod::Spec.new do |s|
   ]
 
   s.dependency "React-Core"
-  s.dependency "WebRTC-SDK", "~> 124.0.0"
+  s.dependency "Mediasoup-Client-Swift", "0.13.2"
 end

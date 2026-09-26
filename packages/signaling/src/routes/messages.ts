@@ -1,3 +1,4 @@
+import { scopedRooms, scopedRoles } from "../tenant-scope.js";
 import type { FastifyInstance } from "fastify";
 import { listMessages } from "../messages.js";
 import type { RoomStore } from "../store/types.js";
@@ -24,12 +25,16 @@ export async function registerMessageRoutes(app: FastifyInstance, deps: MessageR
 
       // History is readable by current room members only. Call this after the
       // SDK's roomJoined event, which fires once membership is recorded.
-      if (!(await deps.rooms.isMember(roomId, claims.userId))) {
+      if (!(await scopedRooms(deps.rooms, claims.appId).isMember(roomId, claims.userId))) {
         return reply.status(403).send({ error: "Join the room first" });
       }
 
       try {
         const limit = req.query.limit ? Number(req.query.limit) : undefined;
+        if ((limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 200)) ||
+            (req.query.before !== undefined && !/^[1-9]\d*$/.test(req.query.before))) {
+          return reply.status(400).send({ error: "limit must be 1-200 and before must be a positive message ID" });
+        }
         return await listMessages(claims.appId, roomId, { before: req.query.before, limit });
       } catch (err) {
         const message = err instanceof Error ? err.message : "Failed to load messages";

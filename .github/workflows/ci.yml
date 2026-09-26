@@ -9,6 +9,20 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: rtc_test
+          POSTGRES_PASSWORD: rtc_test_password
+          POSTGRES_DB: rtc_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rtc_test -d rtc_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -34,6 +48,17 @@ jobs:
 
       - name: Test signaling
         run: npm run test -w @rtc/signaling
+
+      - name: Test media authorization
+        run: node --test packages/media-sfu/dist/auth.test.js
+
+      - name: Test account security with PostgreSQL
+        run: node scripts/test-database.mjs
+        env:
+          TEST_DATABASE_URL: postgresql://rtc_test:rtc_test_password@localhost:5432/rtc_test
+
+      - name: Build browser applications
+        run: npm run build -w @rtc/demo && npm run build -w @rtc/dashboard
 
       - name: Verify npm packages
         run: |

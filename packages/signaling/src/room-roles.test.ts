@@ -34,4 +34,11 @@ describe("room-roles", () => {
     store.assign("room-1", "bob", "audience");
     assert.equal(store.list("room-1").length, 2);
   });
+
+  it("preserves the host on rejoin while allowing an explicit audience downgrade", () => {
+    store.assign("room", "alice", "publisher");
+    store.assign("room", "bob", "publisher");
+    assert.equal(store.assign("room", "alice", "publisher"), "host");
+    assert.equal(store.assign("room", "alice", "audience"), "audience");
+  });
 });

@@ -1,0 +1,9 @@
+.dart_tool/
+build/
+android/build/
+android/.gradle/
+ios/Pods/
+ios/.symlinks/
+*.keystore
+*.jks
+.env*

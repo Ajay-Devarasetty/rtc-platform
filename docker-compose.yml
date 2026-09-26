@@ -86,6 +86,7 @@ services:
       - "40000-40100:40000-40100/udp"
     environment:
       PORT: 4100
+      SIGNALING_URL: http://signaling:4000
       ANNOUNCED_IP: 127.0.0.1
       JWT_SECRET: dev-secret-change-in-production
       RTMP_INGEST_URL: rtmp://rtmp-ingest/live

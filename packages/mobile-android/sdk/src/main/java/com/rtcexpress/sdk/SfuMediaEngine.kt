@@ -12,6 +12,7 @@ import org.mediasoup.droid.MediasoupClient
 import org.mediasoup.droid.Producer
 import org.mediasoup.droid.RecvTransport
 import org.mediasoup.droid.SendTransport
+import org.mediasoup.droid.Transport
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
 import org.webrtc.Camera2Enumerator
@@ -133,17 +134,17 @@ class SfuMediaEngine(
         val mediasoupDevice = device ?: return
         sendTransport = mediasoupDevice.createSendTransport(
             object : SendTransport.Listener {
-                override fun onConnect(transport: SendTransport, dtlsParameters: String) {
+                override fun onConnect(transport: Transport, dtlsParameters: String) {
                     postJson(
                         "$base/v1/rooms/${encode(roomId)}/transports/${transport.id}/connect",
                         JSONObject().put("peerId", userId).put("dtlsParameters", JSONObject(dtlsParameters))
                     )
                 }
 
-                override fun onConnectionStateChange(transport: SendTransport, connectionState: String) {}
+                override fun onConnectionStateChange(transport: Transport, connectionState: String) {}
 
                 override fun onProduce(
-                    transport: SendTransport,
+                    transport: Transport,
                     kind: String,
                     rtpParameters: String,
                     appData: String
@@ -171,6 +172,14 @@ class SfuMediaEngine(
                     }
                     return producerId
                 }
+
+                override fun onProduceData(
+                    transport: Transport,
+                    sctpStreamParameters: String,
+                    label: String,
+                    protocol: String,
+                    appData: String
+                ): String = ""
             },
             info.getString("id"),
             info.getJSONObject("iceParameters").toString(),
@@ -187,14 +196,14 @@ class SfuMediaEngine(
         val mediasoupDevice = device ?: return
         recvTransport = mediasoupDevice.createRecvTransport(
             object : RecvTransport.Listener {
-                override fun onConnect(transport: RecvTransport, dtlsParameters: String) {
+                override fun onConnect(transport: Transport, dtlsParameters: String) {
                     postJson(
                         "$base/v1/rooms/${encode(roomId)}/transports/${transport.id}/connect",
                         JSONObject().put("peerId", userId).put("dtlsParameters", JSONObject(dtlsParameters))
                     )
                 }
 
-                override fun onConnectionStateChange(transport: RecvTransport, connectionState: String) {}
+                override fun onConnectionStateChange(transport: Transport, connectionState: String) {}
             },
             info.getString("id"),
             info.getJSONObject("iceParameters").toString(),

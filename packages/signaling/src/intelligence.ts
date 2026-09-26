@@ -4,7 +4,7 @@ import type { SignalingEnv } from "./env.js";
 import { getRecording, updateRecordingIntelligence } from "./recordings.js";
 
 export type DispatchFn = (appId: string, type: string, payload: Record<string, unknown>) => void;
-export type SendToUserFn = (userId: string, message: ServerMessage) => Promise<boolean>;
+export type SendToUserFn = (appId: string, userId: string, message: ServerMessage) => Promise<boolean>;
 
 const DEMO_TRANSCRIPT =
   "[Demo transcript] Audio captured successfully. Set OPENAI_API_KEY on the signaling server for real speech-to-text.";
@@ -99,7 +99,7 @@ export async function processRecordingIntelligence(
     });
 
     dispatch(recording.appId, "transcript.ready", { ...base, transcript });
-    await sendToUser(recording.userId, {
+    await sendToUser(recording.appId, recording.userId, {
       type: "transcript_ready",
       payload: { recordingId, roomId: recording.roomId, callId: recording.callId || undefined, transcript },
     });
@@ -111,7 +111,7 @@ export async function processRecordingIntelligence(
     });
 
     dispatch(recording.appId, "summary.ready", { ...base, transcript, summary });
-    await sendToUser(recording.userId, {
+    await sendToUser(recording.appId, recording.userId, {
       type: "summary_ready",
       payload: {
         recordingId,

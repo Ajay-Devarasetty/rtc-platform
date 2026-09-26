@@ -3,9 +3,25 @@ dist
 .env
 *.log
 data/
+backups/
+*.dump
+*.partial
+secrets/
+packages/mobile-android/.gradle/
+packages/mobile-android/sdk/build/
+packages/mobile-react-native/android/build/
+packages/mobile-flutter/.dart_tool/
+packages/mobile-flutter/build/
+packages/mobile-flutter/pubspec.lock
 
 .env.production
 scripts/vm-deploy.sh
 
 # tsc output from packages/mobile-react-native (prepare script)
-lib/
+packages/mobile-react-native/lib/
+
+# Local demo apps — use e:\projects\rtc-demo-app instead
+apps/rn-test-app/
+packages/mobile-android/build/
+packages/mobile-flutter/example/.dart_tool/
+packages/mobile-flutter/example/pubspec.lock

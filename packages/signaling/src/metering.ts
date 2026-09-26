@@ -1,4 +1,5 @@
 import { getPool } from "./db.js";
+import { durationInPeriod } from "./usage-period.js";
 
 export interface CallSession {
   id: number;
@@ -72,7 +73,7 @@ export async function endCallSession(appId: string, callId: string, reason = "ha
     await db.query(
       `UPDATE call_sessions
        SET ended_at = NOW(),
-           duration_ms = EXTRACT(EPOCH FROM (NOW() - started_at))::int * 1000,
+           duration_ms = GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000))::bigint,
            end_reason = $3
        WHERE app_id = $1 AND call_id = $2 AND ended_at IS NULL`,
       [appId, callId, reason]
@@ -105,7 +106,7 @@ export async function endActiveCallsForUser(
     await db.query(
       `UPDATE call_sessions
        SET ended_at = NOW(),
-           duration_ms = EXTRACT(EPOCH FROM (NOW() - started_at))::int * 1000,
+           duration_ms = GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000))::bigint,
            end_reason = $3
        WHERE app_id = $1
          AND ended_at IS NULL
@@ -199,7 +200,7 @@ export async function getMeteringSummary(
       if (opts.to && e.createdAt > opts.to) return false;
       return true;
     });
-    const totalMs = sessions.reduce((sum, s) => sum + (s.durationMs ?? 0), 0);
+    const totalMs = memoryCallSessions.filter(s => s.appId === appId).reduce((sum, s) => sum + durationInPeriod(s.startedAt, s.endedAt, opts), 0);
     return {
       appId,
       period: { from: opts.from ?? null, to: opts.to ?? null },
@@ -244,8 +245,10 @@ export async function getMeteringSummary(
       sessionParams
     ),
     db.query(
-      `SELECT COALESCE(SUM(duration_ms), 0)::bigint AS total FROM call_sessions WHERE ${sessionFilter} AND duration_ms IS NOT NULL`,
-      sessionParams
+      `SELECT COALESCE(SUM(GREATEST(0, EXTRACT(EPOCH FROM
+        (LEAST(COALESCE(ended_at, NOW()), $3::timestamptz) - GREATEST(started_at, $2::timestamptz))) * 1000)), 0)::bigint AS total
+       FROM call_sessions WHERE app_id = $1 AND started_at <= $3::timestamptz AND COALESCE(ended_at, NOW()) >= $2::timestamptz`,
+      [appId, opts.from || "-infinity", opts.to || new Date().toISOString()]
     ),
     db.query(`SELECT COUNT(*)::int AS total FROM events WHERE ${eventFilter}`, params),
   ]);
