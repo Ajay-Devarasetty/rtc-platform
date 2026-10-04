@@ -30,7 +30,7 @@ npm run dev          # signaling + SFU + demo
 - Signaling: http://localhost:4000
 - SFU: http://localhost:4100
 - Demo: http://localhost:5180
-- **Developer Dashboard**: http://localhost:5181
+- **Admin Dashboard**: http://localhost:5181/admin/
 
 ## Phase 2 — Developer SaaS
 

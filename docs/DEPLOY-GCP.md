@@ -61,7 +61,7 @@ curl https://<your-domain>/ready     # {"ok":true,...}
 
 | | URL |
 |---|---|
-| Dashboard | `https://<your-domain>/` (sign in with your `ADMIN_API_KEY`) |
+| Admin dashboard | `https://<your-domain>/admin/` (sign in with your `ADMIN_API_KEY`) |
 | Demo | `https://<your-domain>/demo/` |
 | API | `https://<your-domain>/v1/...` |
 

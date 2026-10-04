@@ -55,7 +55,7 @@
 		reverse_proxy host.docker.internal:8080
 	}
 
-	# Developer dashboard at the root
+	# Public demo is separate from platform administration.
 	handle /demo/* {
 		uri strip_prefix /demo
 		root * /srv/demo
@@ -63,9 +63,17 @@
 		file_server
 	}
 
-	handle {
+	redir /admin /admin/ 308
+	handle_path /admin/* {
+		header X-Robots-Tag "noindex, nofollow, noarchive"
+		header Cache-Control "no-store"
 		root * /srv/dashboard
 		try_files {path} /index.html
 		file_server
+	}
+
+	# No admin SPA fallback at the API root or at old /dashboard URLs.
+	handle {
+		respond "Not found" 404
 	}
 }

@@ -15,13 +15,13 @@ function renderLogin() {
   app.innerHTML = `
     <header class="top">
       <div>
-        <h1>RTC Developer Dashboard</h1>
+        <h1>RTCExpress Administration</h1>
         <p>Manage projects, webhooks, events and usage</p>
       </div>
     </header>
     <section class="card">
       <h2>Sign in</h2>
-      <p class="muted" style="margin-bottom:12px">Enter your admin API key (default dev: <code>dev-admin-key</code>)</p>
+      <p class="muted" style="margin-bottom:12px">Authorized administrators only. Enter your admin API key.</p>
       <div class="row">
         <input id="admin-key" type="password" placeholder="Admin API key" value="${escapeHtml(getAdminKey())}" />
         <button id="login-btn">Continue</button>
@@ -83,7 +83,7 @@ async function renderHome() {
   app.innerHTML = `
     <header class="top">
       <div>
-        <h1>RTC Developer Dashboard</h1>
+        <h1>RTCExpress Administration</h1>
         <p>Projects & developer tools</p>
       </div>
       <div class="row"><button id="customers-btn">Customers & payments</button><button class="secondary" id="logout-btn">Sign out</button></div>
