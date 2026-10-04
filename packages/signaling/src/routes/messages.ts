@@ -3,6 +3,9 @@ import type { FastifyInstance } from "fastify";
 import { listMessages } from "../messages.js";
 import type { RoomStore } from "../store/types.js";
 import { requireUser } from "../user-auth.js";
+import { getPool } from '../db.js';
+import { removeChatSubscription } from '../chat-notifications.js';
+import { rateLimit } from '../rate-limit.js';
 
 interface MessageRouteDeps {
   jwtSecret: string;
@@ -10,6 +13,24 @@ interface MessageRouteDeps {
 }
 
 export async function registerMessageRoutes(app: FastifyInstance, deps: MessageRouteDeps) {
+  app.put<{Params:{roomId:string}}>('/v1/rooms/:roomId/notifications',async(req,reply)=>{
+    const claims=requireUser(req,reply,deps.jwtSecret);if(!claims)return;
+    const roomId=req.params.roomId;
+    if(claims.userId.startsWith('__') || (claims.roomId && claims.roomId!==roomId))return reply.code(403).send({error:'User token for this room required'});
+    if(!roomId || roomId.length>255)return reply.code(400).send({error:'Valid roomId required'});
+    if(!rateLimit(`chat-subscribe:${claims.appId}:${claims.userId}`,60,60000))return reply.code(429).send({error:'Too many subscriptions'});
+    if(!await scopedRooms(deps.rooms,claims.appId).isMember(roomId,claims.userId))return reply.code(403).send({error:'Join the room before subscribing'});
+    const db=getPool();if(!db)return reply.code(503).send({error:'Database unavailable'});
+    await db.query('INSERT INTO chat_push_subscriptions (app_id,room_id,user_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING',[claims.appId,roomId,claims.userId]);
+    return {ok:true};
+  });
+  app.delete<{Params:{roomId:string}}>('/v1/rooms/:roomId/notifications',async(req,reply)=>{
+    const claims=requireUser(req,reply,deps.jwtSecret);if(!claims)return;
+    if(claims.userId.startsWith('__') || (claims.roomId && claims.roomId!==req.params.roomId))return reply.code(403).send({error:'User token for this room required'});
+    if(!getPool())return reply.code(503).send({error:'Database unavailable'});
+    await removeChatSubscription(claims.appId,req.params.roomId,claims.userId);
+    return {ok:true};
+  });
   app.get<{ Params: { roomId: string }; Querystring: { before?: string; limit?: string } }>(
     "/v1/rooms/:roomId/messages",
     async (req, reply) => {

@@ -29,6 +29,8 @@ import { registerMediaSessionRoutes } from "./routes/media-sessions.js";
 import { registerLeadRoutes } from "./routes/leads.js";
 import { registerDemoTokenRoutes } from "./routes/demo-token.js";
 import { registerAuthRoutes } from "./routes/auth.js";
+import { registerPushSettingsRoutes } from "./routes/push-settings.js";
+import { registerConsoleRoutes } from "./routes/console.js";
 import { registerPortalRoutes } from "./routes/portal.js";
 import { endMediaSessionsForUser, leaveMediaSession } from "./media-sessions.js";
 import { registerMessageRoutes } from "./routes/messages.js";
@@ -39,6 +41,7 @@ import { registerMediaAuthorizeRoutes } from "./routes/media-authorize.js";
 import { ProjectTaskQueue } from "./task-queue.js";
 import { registerPushRoutes } from "./routes/push.js";
 import { sendCallPush } from "./push.js";
+import { startMessagePushWorker, removeChatSubscription } from './chat-notifications.js';
 import { registerAccountSecurityRoutes } from "./routes/account-security.js";
 import { registerDiagnosticsRoutes } from "./routes/diagnostics.js";
 import { dispatchEvent } from "./webhooks.js";
@@ -67,7 +70,7 @@ if (env.databaseUrl) {
 }
 
 const app = Fastify({ logger: true });
-await app.register(cors, { origin: true });
+await app.register(cors, { origin: true, methods:['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS'] });
 await registerAdminRoutes(app);
 await registerWebhookRoutes(app);
 await registerEventRoutes(app);
@@ -79,6 +82,8 @@ await registerLeadRoutes(app);
 await registerDemoTokenRoutes(app, { jwtSecret: env.jwtSecret });
 await registerAuthRoutes(app, env.jwtSecret);
 await registerPortalRoutes(app, env.jwtSecret);
+await app.register(async (scope) => registerConsoleRoutes(scope, env.jwtSecret));
+await app.register(async (scope) => registerPushSettingsRoutes(scope, env.jwtSecret));
 await registerPushRoutes(app, env.jwtSecret);
 await registerAccountSecurityRoutes(app, env.jwtSecret);
 await registerDiagnosticsRoutes(app, env.jwtSecret);
@@ -225,6 +230,7 @@ const relay = new MessageRelay(
   send
 );
 await relay.start();
+const stopMessagePushWorker=startMessagePushWorker(async(appId,userId)=>Boolean(await presence.getInstance(tenantKey(appId,userId))),()=>app.log.error('Message push queue failed'));
 
 userNotifier.sendToUser = (appId, userId, message) => relay.sendToUser(tenantKey(appId, userId), message);
 
@@ -253,6 +259,7 @@ async function forceLeaveRoom(
   reason: string
 ) {
   const appRooms = scopedRooms(rooms, appId);
+  await removeChatSubscription(appId,roomId,targetUserId);
   await appRooms.leave(roomId, targetUserId);
   scopedRoles(roomRoles, appId).remove(roomId, targetUserId);
   await leaveMediaSession(appId, roomId, targetUserId, reason);
@@ -386,6 +393,7 @@ async function shutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
   clearInterval(ringingTimer);
+  await stopMessagePushWorker();
   console.log(`Shutting down (${signal})...`);
 
   for (const ws of sockets.values()) {

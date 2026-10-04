@@ -19,7 +19,7 @@ export async function registerDiagnosticsRoutes(app: FastifyInstance, secret: st
       db.query(`SELECT call_id, room_id, caller_user_id, callee_user_id, started_at, ended_at, duration_ms, end_reason FROM call_sessions WHERE app_id=$1 AND ($2::text IS NULL OR call_id=$2) ORDER BY started_at DESC LIMIT 50`, args),
       db.query(`SELECT id, type, room_id, user_id, created_at FROM events WHERE app_id=$1 AND ($2::text IS NULL OR payload->>'callId'=$2) ORDER BY created_at DESC LIMIT 50`, args),
       db.query(`SELECT call_id, user_id, quality_score, quality_label, rtt_ms, packet_loss_pct, created_at FROM call_quality_reports WHERE app_id=$1 AND ($2::text IS NULL OR call_id=$2) ORDER BY created_at DESC LIMIT 50`, args),
-      db.query(`SELECT call_id, success, status_code, created_at FROM push_deliveries WHERE app_id=$1 AND ($2::text IS NULL OR call_id=$2) ORDER BY created_at DESC LIMIT 50`, args),
+      db.query(`SELECT call_id, message_id, platform, push_type, success, status_code, created_at FROM push_deliveries WHERE app_id=$1 AND ($2::text IS NULL OR call_id=$2) ORDER BY created_at DESC LIMIT 50`, args),
       listWebhookDeliveries(claims.appId, { limit: 50 }), getMediaStats(claims.appId),
       db.query(`SELECT email_verified_at FROM customer_accounts WHERE app_id=$1`, [claims.appId]),
     ]);

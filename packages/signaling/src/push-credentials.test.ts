@@ -1,0 +1,50 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
+import Fastify from "fastify";
+import { validateFirebaseCredentials, sealCredentials, openCredentials } from "./push-credentials.js";
+import { getPool, closeDb } from "./db.js";
+import { issueToken } from "./auth.js";
+import { registerPushSettingsRoutes } from "./routes/push-settings.js";
+import { pushCredentials } from "./push.js";
+
+test("Firebase keys are encrypted, bound to their project, and exposed only as metadata", async t => {
+  const oldDb = process.env.DATABASE_URL, oldKey = process.env.PUSH_CREDENTIALS_KEY;
+  process.env.DATABASE_URL = "postgresql://unused/push-settings";
+  process.env.PUSH_CREDENTIALS_KEY = "a".repeat(64);
+  t.after(async () => { await closeDb(); if (oldDb === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = oldDb; if (oldKey === undefined) delete process.env.PUSH_CREDENTIALS_KEY; else process.env.PUSH_CREDENTIALS_KEY = oldKey; });
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const input = { type: "service_account", project_id: "test-project", client_email: "sender@test-project.iam.gserviceaccount.com", private_key_id: "f".repeat(40), private_key: privateKey.export({ format: "pem", type: "pkcs8" }).toString() };
+  const credentials = validateFirebaseCredentials(input), sealed = sealCredentials("owned-project", credentials);
+  assert.ok(!sealed.includes("PRIVATE KEY"));
+  assert.deepEqual(openCredentials("owned-project", sealed), credentials);
+  assert.throws(() => openCredentials("other-project", sealed));
+  assert.throws(() => openCredentials("owned-project", sealed.slice(0, -5) + "AAAAA"));
+  assert.throws(() => validateFirebaseCredentials({ project_id: "test-project" }));
+  assert.throws(() => validateFirebaseCredentials({ ...input, private_key: "not a key" }));
+  let saved: string | null | undefined;
+  t.mock.method(getPool()!, "query", async (sql: string, args: unknown[]) => {
+    if (sql.includes("SELECT portal_version")) return { rows: [{ portal_version: 0 }] };
+    assert.equal(args[0], "owned-project");
+    if(sql.includes('FROM apns_credentials'))return {rows:[]};
+    if (sql.startsWith("INSERT")) { saved = sql.includes("VALUES ($1,NULL") ? null : args[1] as string; return { rowCount: 1, rows: [] }; }
+    return { rows: saved === undefined ? [] : [{ encrypted_value: saved }] };
+  });
+  const app = Fastify(); t.after(() => app.close());
+  await app.register(async scope => registerPushSettingsRoutes(scope, "test"));
+  const headers = { authorization: `Bearer ${issueToken({ appId: "owned-project", userId: "__portal__" }, "test")}` };
+  const url = "/v1/portal/push-settings/android";
+  assert.equal((await app.inject({ url, method: "PUT", payload: { serviceAccount: input } })).statusCode, 401);
+  const savedResponse = await app.inject({ url, method: "PUT", headers, payload: { serviceAccount: input, appId: "other-project" } });
+  assert.equal(savedResponse.statusCode, 200);
+  assert.ok(saved && !saved.includes(input.private_key));
+  assert.deepEqual(await pushCredentials("owned-project"), credentials);
+  const metadata = await app.inject({ url: "/v1/portal/push-settings", headers });
+  assert.equal(metadata.statusCode, 200); assert.equal(metadata.headers["cache-control"], "no-store");
+  assert.equal(metadata.json().android.projectId, "test-project");
+  assert.ok(!metadata.body.includes("PRIVATE KEY")); assert.ok(!metadata.body.includes("encrypted_value"));
+  assert.equal((await app.inject({ url, method: "DELETE", headers })).statusCode, 200);
+  assert.equal(await pushCredentials("owned-project"), null);
+  process.env.PUSH_CREDENTIALS_KEY = "";
+  assert.equal((await app.inject({ url, method: "PUT", headers, payload: { serviceAccount: input } })).statusCode, 503);
+});

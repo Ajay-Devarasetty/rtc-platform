@@ -10,17 +10,18 @@
     "test": "tsx --test src/**/*.test.ts"
   },
   "dependencies": {
+    "@fastify/cors": "^10.0.2",
     "@rtc/protocol": "*",
+    "bcryptjs": "^2.4.3",
     "dotenv": "^16.4.7",
     "fastify": "^5.2.1",
-    "@fastify/cors": "^10.0.2",
-    "jsonwebtoken": "^9.0.2",
     "ioredis": "^5.4.2",
-    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
     "pg": "^8.13.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@types/bcryptjs": "^2.4.6",
     "@types/jsonwebtoken": "^9.0.9",
     "@types/node": "^22.10.5",

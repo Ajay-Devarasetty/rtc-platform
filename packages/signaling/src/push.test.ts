@@ -20,6 +20,8 @@ test("push credentials and tokens remain scoped to their project and expired dev
   });
   let removed = false; const sends: string[] = [];
   t.mock.method(getPool()!, "query", async (sql: string, args: unknown[]) => {
+    if (sql.includes("FROM push_credentials")) return { rows: [] };
+    if (args[0] === 'other-app') return { rowCount:0,rows:[] };
     assert.equal(args[0], "app");
     if (sql.startsWith("SELECT")) { assert.equal(args[1], "bob"); return { rowCount: 1, rows: [{ installation_id: "device", token: "device-token" }] }; }
     if (sql.startsWith("DELETE")) { assert.equal(args[2], "device-token"); removed = true; }

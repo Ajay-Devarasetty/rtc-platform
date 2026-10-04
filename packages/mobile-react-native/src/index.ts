@@ -1,4 +1,5 @@
 import { DeviceEventEmitter, Platform, NativeModules, NativeEventEmitter, type EmitterSubscription } from "react-native";
+export { RTCPushClient, type PushDeviceRegistration } from './push';
 
 const LINKING_ERROR =
   "The package '@rtc/react-native-sdk' doesn't seem to be linked. Run pod install (iOS) and rebuild.";

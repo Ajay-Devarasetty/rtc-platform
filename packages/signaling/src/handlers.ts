@@ -20,6 +20,7 @@ import type { RoomRoleStore } from "./room-roles.js";
 import { canModerate, canPublish, isAudience } from "./room-roles.js";
 import { joinMediaSession, leaveMediaSession } from "./media-sessions.js";
 import { MAX_MESSAGE_LENGTH, saveMessage } from "./messages.js";
+import { removeChatSubscription } from './chat-notifications.js';
 import { endCallSession, startCallSession } from "./metering.js";
 import { saveRecording } from "./recordings.js";
 import { saveQualityReport } from "./quality.js";
@@ -133,6 +134,7 @@ export async function handleClientMessage(ctx: HandlerContext) {
 
     case "leave_room": {
       const { roomId } = message.payload as { roomId: string };
+      await removeChatSubscription(claims.appId,roomId,userId);
       if (!(await ctx.rooms.isMember(roomId, userId))) return;
       const call = findUserCall(claims.appId, userId);
       if (call?.roomId === roomId) {
@@ -177,6 +179,9 @@ export async function handleClientMessage(ctx: HandlerContext) {
         });
         return;
       }
+      if(clientMsgId !== undefined && (typeof clientMsgId !== 'string' || clientMsgId.length>64)) {
+        ctx.send(ws,{type:'error',payload:{message:'clientMsgId must be a string of at most 64 characters'}});return;
+      }
       if (!(await ctx.rooms.isMember(roomId, userId))) {
         ctx.send(ws, { type: "error", payload: { message: "Join the room first" } });
         return;
@@ -190,7 +195,7 @@ export async function handleClientMessage(ctx: HandlerContext) {
         clientMsgId,
       };
       // Persist before delivery so a refresh cannot race the history write.
-      await saveMessage(ctx.claims.appId, roomId, userId, text, clientMsgId);
+      await saveMessage(ctx.claims.appId, roomId, userId, text, clientMsgId || undefined);
       const members = await ctx.rooms.getMembers(roomId);
       for (const memberId of members) {
         if (memberId !== userId) {
@@ -488,6 +493,7 @@ export async function handleClientMessage(ctx: HandlerContext) {
         ctx.send(ws, { type: "error", payload: { message: "Only host can end the room", code: "forbidden" } });
         return;
       }
+      await removeChatSubscription(claims.appId,roomId);
       const members = await ctx.rooms.getMembers(roomId);
       for (const memberId of members) {
         if (memberId !== userId) {

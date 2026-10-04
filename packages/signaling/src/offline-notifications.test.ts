@@ -1,0 +1,147 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { generateKeyPairSync } from 'node:crypto';
+import { PGlite } from '@electric-sql/pglite';
+import Fastify from 'fastify';
+import jwt from 'jsonwebtoken';
+import { getPool, closeDb } from './db.js';
+import { issueToken } from './auth.js';
+import { registerPushRoutes } from './routes/push.js';
+import { registerPushSettingsRoutes } from './routes/push-settings.js';
+import { registerMessageRoutes } from './routes/messages.js';
+import { MemoryRoomStore } from './store/memory.js';
+import { scopedRooms } from './tenant-scope.js';
+import { apnsTransport, sendApns } from './apns.js';
+import { apnsCredentials, validateApnsCredentials, sealCredentials } from './push-credentials.js';
+import { saveMessage } from './messages.js';
+import { processMessagePushJobs, removeChatSubscription } from './chat-notifications.js';
+import { sendCallPush } from './push.js';
+import { registerRinging, resetCallState } from './call-state.js';
+
+test('APNs and offline notifications against an isolated PostgreSQL engine',async t=>{
+  const oldDb=process.env.DATABASE_URL,oldKey=process.env.PUSH_CREDENTIALS_KEY;
+  process.env.DATABASE_URL='postgresql://unused/offline-tests';process.env.PUSH_CREDENTIALS_KEY='b'.repeat(64);
+  const pg=new PGlite();
+  const app=Fastify();
+  t.after(async()=>{await app.close();await closeDb();await pg.close();resetCallState();
+    if(oldDb===undefined)delete process.env.DATABASE_URL;else process.env.DATABASE_URL=oldDb;
+    if(oldKey===undefined)delete process.env.PUSH_CREDENTIALS_KEY;else process.env.PUSH_CREDENTIALS_KEY=oldKey;
+  });
+  await pg.exec(`CREATE TABLE apps(app_id VARCHAR(64) PRIMARY KEY,active BOOLEAN DEFAULT TRUE,portal_version INTEGER DEFAULT 0); INSERT INTO apps(app_id) VALUES ('alpha'),('beta');
+    CREATE TABLE customer_accounts(app_id VARCHAR(64),portal_version INTEGER); INSERT INTO customer_accounts VALUES ('alpha',0),('beta',0);`);
+  for(const migration of ['009_messages.sql','013_push_devices.sql','015_push_credentials.sql','016_offline_notifications.sql','016_offline_notifications.sql'])await pg.exec(await readFile(new URL(`../migrations/${migration}`,import.meta.url),'utf8'));
+  t.mock.method(getPool()!,'query',async(sql:string,args?:unknown[])=>{const result=await pg.query(sql,args);return {...result,rowCount:result.rows.length || result.affectedRows};});
+  const rooms=new MemoryRoomStore();
+  await registerPushRoutes(app,'test');await registerMessageRoutes(app,{jwtSecret:'test',rooms});
+  await app.register(async scope=>registerPushSettingsRoutes(scope,'test'));
+  const headers=(userId:string,appId='alpha',roomId?:string)=>({authorization:`Bearer ${issueToken({appId,userId,...(roomId?{roomId}:{})},'test')}`});
+  const {privateKey,publicKey}=generateKeyPairSync('ec',{namedCurve:'prime256v1'});
+  const config={keyId:'KEY1234567',teamId:'TEAM123456',bundleId:'com.example.chat',environment:'sandbox' as const,privateKey:privateKey.export({type:'pkcs8',format:'pem'}).toString()};
+  const calls:Array<{host:string;headers:any;body:any}>=[];
+  let providerStatus=200,providerReason='';
+  t.mock.method(apnsTransport,'send',async(host:string,h:any,body:string)=>{calls.push({host,headers:h,body:JSON.parse(body)});return {status:providerStatus,body:providerReason?JSON.stringify({reason:providerReason}):''};});
+  const androidSends:any[]=[];
+  t.mock.method(globalThis,'fetch',async(url:string,options:RequestInit)=>{
+    if(url.includes('oauth2.googleapis.com'))return new Response('{"access_token":"test-access","expires_in":3600}');
+    assert.ok(url.startsWith('https://fcm.googleapis.com/'));androidSends.push(JSON.parse(String(options.body)).message);return new Response('{}');
+  });
+  await t.test('APNs settings are validated, encrypted, tenant scoped and removable',async()=>{
+    assert.throws(()=>validateApnsCredentials({...config,privateKey:'bad'}));
+    assert.throws(()=>validateApnsCredentials({...config,bundleId:'https://attacker.example'}));
+    assert.equal((await app.inject({method:'PUT',url:'/v1/portal/push-settings/ios',payload:config})).statusCode,401);
+    assert.equal((await app.inject({method:'PUT',url:'/v1/portal/push-settings/ios',headers:headers('bob'),payload:config})).statusCode,403);
+    assert.equal((await app.inject({method:'PUT',url:'/v1/portal/push-settings/ios',headers:headers('__portal__'),payload:{...config,appId:'beta'}})).statusCode,200);
+    const metadata=await app.inject({url:'/v1/portal/push-settings',headers:headers('__portal__')});
+    assert.equal(metadata.statusCode,200);assert.equal(metadata.json().ios.credentials.length,1);assert.ok(!metadata.body.includes('PRIVATE KEY'));
+    const encrypted=await pg.query<any>('SELECT encrypted_value FROM apns_credentials');assert.ok(!encrypted.rows[0].encrypted_value.includes('PRIVATE KEY'));
+    assert.equal(await apnsCredentials('beta',config.bundleId,'sandbox'),null);
+    assert.deepEqual(await apnsCredentials('alpha',config.bundleId,'sandbox'),config);
+    assert.equal((await app.inject({method:'DELETE',url:'/v1/portal/push-settings/ios',headers:headers('__portal__','beta'),payload:config})).statusCode,200);
+    assert.ok(await apnsCredentials('alpha',config.bundleId,'sandbox'));
+  });
+  await t.test('APNs signs ES256, selects environment/topic and classifies failures',async()=>{
+    const result=await sendApns(config,'a'.repeat(64),'alert',{aps:{alert:{title:'New message',body:'New message'}}},Date.now()+60000);
+    assert.equal(result.success,true);const request=calls.at(-1)!;
+    assert.equal(request.host,'https://api.sandbox.push.apple.com');assert.equal(request.headers['apns-topic'],'com.example.chat');assert.equal(request.headers['apns-push-type'],'alert');
+    const claims=jwt.verify(request.headers.authorization.slice(7),publicKey,{algorithms:['ES256']}) as jwt.JwtPayload;assert.equal(claims.iss,config.teamId);
+    await sendApns({...config,environment:'production'},'a'.repeat(64),'voip',{aps:{}},Date.now()+60000);
+    assert.equal(calls.at(-1)!.host,'https://api.push.apple.com');assert.equal(calls.at(-1)!.headers['apns-topic'],'com.example.chat.voip');
+    providerStatus=410;providerReason='Unregistered';assert.equal((await sendApns(config,'a'.repeat(64),'alert',{},Date.now())).invalidToken,true);
+    providerStatus=429;providerReason='TooManyRequests';assert.equal((await sendApns(config,'a'.repeat(64),'alert',{},Date.now())).retryable,true);
+    providerStatus=200;providerReason='';calls.length=0;
+  });
+  const register=async(user:string,device:Record<string,unknown>,appId='alpha')=>app.inject({method:'POST',url:'/v1/push/devices',headers:headers(user,appId),payload:device});
+  const ios={installationId:'ios-device-0001',platform:'ios',pushType:'alert',token:'a'.repeat(64),bundleId:config.bundleId,environment:'sandbox',appState:'background'};
+  await t.test('device tokens and subscriptions require the correct user and room',async()=>{
+    assert.equal((await register('bob',{...ios,token:'bad'})).statusCode,400);
+    assert.equal((await register('bob',ios)).statusCode,200);
+    assert.equal((await register('bob',{...ios,pushType:'voip',token:'b'.repeat(64)})).statusCode,200);
+    assert.equal((await register('bob',{installationId:'android-device-1',token:'android-token-000000000000000'})).statusCode,200);
+    assert.equal((await register('alice',{installationId:'sender-device-01',token:'sender-token-0000000000000000'})).statusCode,200);
+    assert.equal((await register('bob',ios,'beta')).statusCode,200);
+    const url='/v1/rooms/chat-room/notifications';
+    assert.equal((await app.inject({method:'PUT',url,headers:headers('bob')})).statusCode,403);
+    await scopedRooms(rooms,'alpha').join('chat-room','bob');await scopedRooms(rooms,'alpha').join('chat-room','alice');
+    assert.equal((await app.inject({method:'PUT',url,headers:headers('bob','alpha','other-room')})).statusCode,403);
+    assert.equal((await app.inject({method:'PUT',url,headers:headers('bob')})).statusCode,200);
+    assert.equal((await app.inject({method:'PUT',url,headers:headers('alice')})).statusCode,200);
+    assert.equal((await app.inject({method:'PUT',url,headers:headers('bob','beta')})).statusCode,403);
+    await scopedRooms(rooms,'alpha').leaveAll('bob'); // Network disconnect retains the durable subscription.
+    const rsa=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'}).toString();
+    await pg.query('INSERT INTO push_credentials(app_id,encrypted_value) VALUES ($1,$2)',['alpha',sealCredentials('alpha',{project_id:'test-project',client_email:'test@test-project.iam.gserviceaccount.com',private_key:rsa})]);
+  });
+  await t.test('message persistence atomically queues once, excluding sender and VoIP devices',async()=>{
+    await saveMessage('alpha','chat-room','alice','PRIVATE CHAT CONTENT','message-1');
+    await saveMessage('alpha','chat-room','alice','PRIVATE CHAT CONTENT','message-1');
+    const jobs=await pg.query<any>('SELECT * FROM message_push_jobs');assert.equal(jobs.rows.length,2);assert.ok(jobs.rows.every(j=>j.user_id==='bob'&&j.app_id==='alpha'));
+    await processMessagePushJobs(async()=>true);
+    assert.equal(calls.length,1);assert.equal(androidSends.length,0);assert.equal(calls[0].headers['apns-push-type'],'alert');assert.ok(!JSON.stringify(calls[0].body).includes('PRIVATE CHAT CONTENT'));
+    const states=await pg.query<any>('SELECT state FROM message_push_jobs ORDER BY state');assert.deepEqual(states.rows.map(r=>r.state),['sent','skipped']);
+  });
+  await t.test('offline Android gets visible FCM alerts; transient iOS failures retry',async()=>{
+    calls.length=0;providerStatus=503;
+    await saveMessage('alpha','chat-room','alice','another private message','message-2');
+    await processMessagePushJobs(async()=>false);
+    assert.equal(androidSends.length,1);assert.equal(androidSends[0].notification.title,'New message');assert.equal(androidSends[0].data.type,'rtc_chat_message');
+    let pending=await pg.query<any>("SELECT * FROM message_push_jobs WHERE state='pending'");assert.equal(pending.rows.length,1);assert.equal(pending.rows[0].attempts,1);
+    providerStatus=200;await pg.exec("UPDATE message_push_jobs SET available_at=NOW() WHERE state='pending'");await processMessagePushJobs(async()=>false);
+    pending=await pg.query<any>("SELECT * FROM message_push_jobs WHERE state='pending'");assert.equal(pending.rows.length,0);assert.equal(calls.length,2);assert.equal(androidSends.length,1);
+  });
+  await t.test('iOS incoming calls use only the VoIP token and expired calls never push',async()=>{
+    calls.length=0;androidSends.length=0;resetCallState();registerRinging('alpha','call-1','chat-room','alice','bob');
+    await sendCallPush('alpha',{toUserId:'bob',callId:'call-1'});
+    assert.equal(calls.length,1);assert.equal(calls[0].headers['apns-push-type'],'voip');assert.equal(calls[0].headers[':path'],`/3/device/${'b'.repeat(64)}`);assert.equal(androidSends.length,1);
+    resetCallState();await sendCallPush('alpha',{toUserId:'bob',callId:'call-1'});assert.equal(calls.length,1);
+  });
+  await t.test('concurrent workers claim each job once and stop retrying at the limit',async()=>{
+    calls.length=0;androidSends.length=0;
+    await saveMessage('alpha','chat-room','alice','private','concurrent-message');
+    await Promise.all([processMessagePushJobs(async()=>false),processMessagePushJobs(async()=>false)]);
+    assert.equal(calls.length,1);assert.equal(androidSends.length,1);
+    providerStatus=503;await saveMessage('alpha','chat-room','alice','private','retry-limit');
+    await pg.exec("UPDATE message_push_jobs SET attempts=4 WHERE state='pending'");
+    await processMessagePushJobs(async()=>false);
+    const failed=await pg.query<any>("SELECT attempts FROM message_push_jobs WHERE state='failed'");assert.equal(failed.rows.length,1);assert.equal(failed.rows[0].attempts,5);
+    providerStatus=200;
+    const before=calls.length;await saveMessage('alpha','chat-room','alice','private','expired-message');
+    await pg.exec("UPDATE message_push_jobs SET created_at=NOW()-INTERVAL '25 hours' WHERE state='pending'");await processMessagePushJobs(async()=>false);assert.equal(calls.length,before);
+  });
+  await t.test('invalid alert tokens are removed without deleting VoIP or another tenant',async()=>{
+    providerStatus=410;providerReason='Unregistered';await saveMessage('alpha','chat-room','alice','private','message-3');await processMessagePushJobs(async()=>false);
+    const tokens=await pg.query<any>("SELECT app_id,push_type FROM push_devices WHERE platform='ios' ORDER BY app_id");assert.deepEqual(tokens.rows,[{app_id:'alpha',push_type:'voip'},{app_id:'beta',push_type:'alert'}]);providerStatus=200;providerReason='';
+  });
+  await t.test('unsubscribe and device logout prevent already-queued sends',async()=>{
+    await saveMessage('alpha','chat-room','alice','private','message-4');const before=androidSends.length;
+    const response=await app.inject({method:'DELETE',url:'/v1/rooms/chat-room/notifications',headers:headers('bob')});assert.equal(response.statusCode,200);
+    await scopedRooms(rooms,'alpha').join('chat-room','bob');
+    assert.equal((await app.inject({method:'PUT',url:'/v1/rooms/chat-room/notifications',headers:headers('bob')})).statusCode,200);
+    await processMessagePushJobs(async()=>false);assert.equal(androidSends.length,before);
+    await saveMessage('alpha','chat-room','alice','private','logout-message');
+    assert.equal((await app.inject({method:'DELETE',url:'/v1/push/devices/android-device-1',headers:headers('bob')})).statusCode,200);
+    await processMessagePushJobs(async()=>false);assert.equal(androidSends.length,before);
+    await removeChatSubscription('alpha','chat-room');assert.equal((await pg.query('SELECT * FROM chat_push_subscriptions')).rows.length,0);
+    assert.equal((await app.inject({method:'DELETE',url:'/v1/push/devices/ios-device-0001',headers:headers('bob')})).statusCode,200);
+    assert.equal((await pg.query("SELECT * FROM push_devices WHERE app_id='beta'")).rows.length,1);
+  });
+});

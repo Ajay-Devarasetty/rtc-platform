@@ -29,9 +29,14 @@ export async function saveMessage(
   if (!db) return;
 
   await db.query(
-    `INSERT INTO messages (app_id, room_id, from_user_id, text, client_msg_id)
+    `WITH saved AS (INSERT INTO messages (app_id, room_id, from_user_id, text, client_msg_id)
      VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (app_id, room_id, client_msg_id) WHERE client_msg_id IS NOT NULL DO NOTHING`,
+     ON CONFLICT (app_id, room_id, client_msg_id) WHERE client_msg_id IS NOT NULL DO NOTHING RETURNING id)
+     INSERT INTO message_push_jobs (app_id,message_id,user_id,installation_id)
+     SELECT $1,saved.id,s.user_id,d.installation_id FROM saved
+       JOIN chat_push_subscriptions s ON s.app_id=$1 AND s.room_id=$2 AND s.user_id<>$3
+       JOIN push_devices d ON d.app_id=s.app_id AND d.user_id=s.user_id AND d.push_type='alert' AND d.updated_at>NOW()-INTERVAL '90 days'
+     ON CONFLICT (app_id,message_id,installation_id) DO NOTHING`,
     [appId, roomId, fromUserId, text, clientMsgId ?? null]
   );
 }
