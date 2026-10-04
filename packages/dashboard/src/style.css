@@ -3,6 +3,15 @@
   margin: 0;
   padding: 0;
 }
+.customer-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:16px; }
+.customer-summary strong,.customer-summary span { display:block; }
+.customer-summary strong { font-size:1.4rem; margin-top:8px; }
+.customer-table { overflow-x:auto; margin:16px 0; }
+.customer-table table { width:100%; min-width:700px; }
+.customer-table td,.customer-table th { text-align:left; padding:12px; overflow-wrap:anywhere; }
+.customer-profile { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin:20px 0; }
+.customer-profile dt { color:#94a3b8; text-transform:capitalize; }
+.customer-profile dd { margin:4px 0 0; overflow-wrap:anywhere; }
 
 body {
   font-family: "DM Sans", system-ui, sans-serif;

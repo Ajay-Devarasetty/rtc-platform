@@ -8,7 +8,7 @@ export function setAdminKey(key: string) {
   sessionStorage.setItem("rtc_admin_key", key);
 }
 
-async function adminFetch<T>(path: string, init?: RequestInit): Promise<T> {
+export async function adminFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API}${path}`, {
     ...init,
     headers: {

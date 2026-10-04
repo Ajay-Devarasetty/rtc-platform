@@ -1,5 +1,6 @@
 import "./style.css";
 import { api, getAdminKey, setAdminKey, type AppRecord } from "./api";
+import { renderCustomers, escapeHtml } from './customers';
 
 const app = document.getElementById("app")!;
 let selectedApp: AppRecord | null = null;
@@ -22,7 +23,7 @@ function renderLogin() {
       <h2>Sign in</h2>
       <p class="muted" style="margin-bottom:12px">Enter your admin API key (default dev: <code>dev-admin-key</code>)</p>
       <div class="row">
-        <input id="admin-key" type="password" placeholder="Admin API key" value="${getAdminKey()}" />
+        <input id="admin-key" type="password" placeholder="Admin API key" value="${escapeHtml(getAdminKey())}" />
         <button id="login-btn">Continue</button>
       </div>
       <div id="login-error" class="error"></div>
@@ -85,17 +86,17 @@ async function renderHome() {
         <h1>RTC Developer Dashboard</h1>
         <p>Projects & developer tools</p>
       </div>
-      <button class="secondary" id="logout-btn">Sign out</button>
+      <div class="row"><button id="customers-btn">Customers & payments</button><button class="secondary" id="logout-btn">Sign out</button></div>
     </header>
     <section class="card">
       <h2>Projects</h2>
-      ${error ? `<div class="error">${error}</div>` : ""}
+      ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
       <div class="app-list" id="app-list">
         ${apps.length ? apps.map((a) => `
-          <div class="app-item" data-app="${a.appId}">
+          <div class="app-item" data-app="${escapeHtml(a.appId)}">
             <div>
-              <strong>${a.name}</strong>
-              <span>${a.appId}</span>
+              <strong>${escapeHtml(a.name)}</strong>
+              <span>${escapeHtml(a.appId)}</span>
             </div>
             <span class="badge ${a.active ? "ok" : "off"}">${a.active ? "active" : "inactive"}</span>
           </div>
@@ -122,6 +123,7 @@ async function renderHome() {
     selectedApp = null;
     renderLogin();
   };
+  document.getElementById('customers-btn')!.onclick=()=>renderCustomers(app,()=>void renderHome(),()=>{setAdminKey('');selectedApp=null;renderLogin();});
 
   document.querySelectorAll(".app-item").forEach((el) => {
     el.addEventListener("click", () => {
@@ -162,8 +164,8 @@ async function renderAppDetail() {
   app.innerHTML = `
     <header class="top">
       <div>
-        <h1>${selectedApp.name}</h1>
-        <p>${appId}</p>
+        <h1>${escapeHtml(selectedApp.name)}</h1>
+        <p>${escapeHtml(appId)}</p>
       </div>
       <div class="row">
         <button class="secondary" id="back-btn">← Projects</button>
