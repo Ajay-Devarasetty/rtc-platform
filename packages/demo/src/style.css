@@ -3,6 +3,11 @@
   margin: 0;
   padding: 0;
 }
+.demo-guide{padding:24px;border:1px solid #36534e;background:#18352f;border-radius:14px;margin-bottom:24px}
+.demo-guide ol{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));list-style:none;gap:24px;margin-bottom:24px}
+.demo-guide p{line-height:1.6;color:#c0d5ce;margin:8px 0}.demo-guide label{display:grid;gap:8px}.demo-guide a{color:#b6e4cf;display:inline-flex;align-items:center;min-height:44px}.demo-guide input{width:100%;min-width:0}.demo-guide details{margin-top:20px}.demo-guide summary{cursor:pointer;padding:10px 0}.demo-guide .row{flex-wrap:wrap}.eyebrow{font-size:12px;letter-spacing:1.5px;color:#acd7be}
+#demo-availability{margin:16px 0;line-height:1.6}.panels{grid-template-columns:minmax(0,1fr)!important}.log{overflow-wrap:anywhere}
+@media(max-width:700px){.demo-guide{padding:18px}.demo-guide ol{grid-template-columns:1fr;gap:12px}}
 
 body {
   font-family: "DM Sans", system-ui, sans-serif;

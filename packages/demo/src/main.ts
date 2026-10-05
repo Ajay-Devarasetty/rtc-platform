@@ -2,8 +2,21 @@ import "./style.css";
 import { RTCExpress } from "@rtc/sdk";
 
 const SERVER_URL = window.location.origin;
-const APP_ID = "demo-app";
-const DEFAULT_ROOM = "room-1";
+let APP_ID = "";
+const params = new URLSearchParams(location.search);
+const suppliedRoom = params.get("room") || "";
+const DEFAULT_ROOM = /^[a-zA-Z0-9_-]{1,64}$/.test(suppliedRoom) ? suppliedRoom : `test-${crypto.randomUUID().replaceAll("-", "").slice(0,20)}`;
+const DEVICE = params.get("device") === "b" ? "b" : "a";
+const ownUser = `guest_${DEFAULT_ROOM}_${DEVICE}`;
+const peerUser = `guest_${DEFAULT_ROOM}_${DEVICE === "a" ? "b" : "a"}`;
+function deviceUrl(device: string) { const url = new URL(location.href); url.search = ""; url.hash = ""; url.searchParams.set("room", DEFAULT_ROOM); url.searchParams.set("device",device); return url.href; }
+history.replaceState(null, "", deviceUrl(DEVICE));
+function describeError(error: unknown) {
+  if(error instanceof DOMException && error.name === "NotAllowedError") return "Permission was blocked. Allow the microphone/camera in your browser site settings, then try again.";
+  if(error instanceof DOMException && error.name === "NotFoundError") return "No microphone or camera was found. Connect a device and try again.";
+  if(error instanceof DOMException && error.name === "NotReadableError") return "The microphone or camera is busy. Close other apps using it and try again.";
+  return error instanceof Error ? error.message : "Unable to complete this action.";
+}
 
 /**
  * Asks the server to mint a demo token.
@@ -124,6 +137,13 @@ function createPanel(config: PanelConfig) {
   const chatInput = root.querySelector(".chat-input") as HTMLInputElement;
   const sendBtn = root.querySelector(".send") as HTMLButtonElement;
   const peerIdInput = root.querySelector(".peer-id") as HTMLInputElement;
+  peerIdInput.value = peerUser;
+  userIdInput.readOnly = true;
+  roomIdInput.readOnly = true;
+  userIdInput.setAttribute("aria-label", "Your test user ID");
+  roomIdInput.setAttribute("aria-label", "Shared test room");
+  peerIdInput.setAttribute("aria-label", "Other device user ID");
+
   const callBtn = root.querySelector(".call") as HTMLButtonElement;
   const videoCallBtn = root.querySelector(".video-call") as HTMLButtonElement;
   const acceptBtn = root.querySelector(".accept") as HTMLButtonElement;
@@ -238,15 +258,19 @@ function createPanel(config: PanelConfig) {
     try {
       const userId = userIdInput.value.trim();
       if (!userId) return;
+      connectBtn.disabled = true;
+      rtc?.destroy();
       log(logEl, "Fetching token...");
       const tokenRes = await fetchDemoToken(userId, roomIdInput.value.trim());
       rtc = new RTCExpress();
       wireRtc(rtc);
 
       rtc.on("roomJoined", () => {
+        log(logEl, `Joined ${roomIdInput.value.trim()}. Connect device ${DEVICE === "a" ? "B" : "A"}, then send a message.`);
         inRoom = true;
         setConnected(true);
       });
+      rtc.on("disconnected", () => { inRoom = false; setConnected(false); log(logEl, "Connection lost. Reconnect, then join the room again."); });
       rtc.on("message", (msg) => {
         appendMessage(messagesEl, msg.fromUserId, msg.text, false);
       });
@@ -365,6 +389,7 @@ function createPanel(config: PanelConfig) {
       await rtc.init({
         serverUrl: SERVER_URL,
         appId: APP_ID,
+        autoReconnect: false,
         userId,
         token: tokenRes.token,
         mediaMode: mediaModeSelect.value as "auto" | "sfu" | "p2p",
@@ -372,21 +397,24 @@ function createPanel(config: PanelConfig) {
       setConnected(true);
       log(logEl, `Ready (${rtc.getMediaMode()}). Voice/video calls and group media supported.`);
     } catch (err) {
-      log(logEl, err instanceof Error ? err.message : "Connection failed");
+      rtc?.destroy();
+      inRoom = false; setConnected(false);
+      log(logEl, describeError(err));
     }
   };
 
   joinBtn.onclick = () => {
-    rtc?.joinRoom(roomIdInput.value.trim());
-    log(logEl, `Joined ${roomIdInput.value.trim()}`);
+    try { rtc?.joinRoom(roomIdInput.value.trim()); log(logEl, "Joining room..."); } catch(error) { log(logEl, describeError(error)); }
   };
 
   sendBtn.onclick = () => {
     const text = chatInput.value.trim();
     if (!text || !rtc) return;
-    rtc.sendMessage(text);
-    appendMessage(messagesEl, "you", text, true);
-    chatInput.value = "";
+    try {
+      rtc.sendMessage(text);
+      appendMessage(messagesEl, "you", text, true);
+      chatInput.value = "";
+    } catch(error) { log(logEl, describeError(error)); }
   };
 
   chatInput.onkeydown = (e) => {
@@ -396,18 +424,20 @@ function createPanel(config: PanelConfig) {
   callBtn.onclick = async () => {
     const peer = peerIdInput.value.trim();
     if (!peer || !rtc) return;
-    await rtc.callUser(peer, { callType: "voice" });
+    try { await rtc.callUser(peer, { callType: "voice" }); } catch(error) { log(logEl, describeError(error)); }
   };
 
   videoCallBtn.onclick = async () => {
     const peer = peerIdInput.value.trim();
     if (!peer || !rtc) return;
-    await rtc.videoCallUser(peer);
+    try { await rtc.videoCallUser(peer); } catch(error) { log(logEl, describeError(error)); }
   };
 
   acceptBtn.onclick = async () => {
-    await rtc?.acceptCall();
-    setCallUi(false, true, isVideoSession);
+    try {
+      await rtc?.acceptCall();
+      setCallUi(false, true, isVideoSession);
+    } catch(error) { log(logEl, describeError(error)); }
   };
 
   rejectBtn.onclick = () => rtc?.rejectCall();
@@ -488,13 +518,14 @@ function createPanel(config: PanelConfig) {
 
 const app = document.getElementById("app")!;
 app.innerHTML = `
-  <header>
-    <h1>RTC SDK Demo</h1>
-    <p>Open two tabs with different user IDs. Join the same room. Try <strong>video call</strong>, <strong>group video</strong>, or <strong>screen share</strong>.</p>
-  </header>
-  <div class="panels"></div>
-`;
-
-const panels = app.querySelector(".panels")!;
-createPanel({ title: "User A", defaultUserId: "user_a", mount: panels });
-createPanel({ title: "User B", defaultUserId: "user_b", mount: panels });
+  <header><p class="eyebrow">RTCEXPRESS / GUIDED DEMO</p><h1>Your first real-time connection</h1><p>Use two devices or two browser windows. This is a public demonstration project, separate from your customer account. Use test messages only.</p></header>
+  <section class="demo-guide"><ol><li><strong>1. Invite your second device</strong><p>Copy the other device's link below. Each device has a different user ID and the same room.</p></li><li><strong>2. Connect and join</strong><p>On both devices, press Connect, then Join room. Send a message to confirm the connection.</p></li><li><strong>3. Try a call</strong><p>Allow microphone/camera access, start a voice or video call, then accept on the other device. Use headphones to avoid feedback.</p></li></ol>
+  <label>Link for device ${DEVICE === "a" ? "B" : "A"}<input id="invite-url" readonly aria-label="Other device invitation"></label><div class="row"><button id="copy-invite">Copy invitation</button><a id="open-peer" target="_blank" rel="noopener">Open second window</a><a href="./">New test room</a></div><p id="invite-status" role="status"></p>
+  <details><summary>Check microphone/camera and troubleshoot</summary><p>Use HTTPS or localhost. Allow access in browser site settings. On a phone, also check the browser's permissions in system settings. A second tab may compete for the same camera; two physical devices give a better test.</p><div class="row"><button id="check-mic">Check microphone</button><button id="check-camera">Check camera + microphone</button></div><p id="permission-result" role="status">Devices are accessed only when you press a check button. Test tracks are stopped immediately afterward.</p><p>Room links are invitations, not private access controls. Reloading or returning later may require reconnecting. If the demo is unavailable, contact support.</p></details></section>
+  <p id="demo-availability" role="status">Checking demo availability...</p><div class="panels"></div>`;
+const invite = document.getElementById("invite-url") as HTMLInputElement;
+invite.value = deviceUrl(DEVICE === "a" ? "b" : "a");
+(document.getElementById("open-peer") as HTMLAnchorElement).href = invite.value;
+document.getElementById("copy-invite")!.onclick = async () => {const status=document.getElementById("invite-status")!;try{await navigator.clipboard.writeText(invite.value);status.textContent="Invitation copied. Open it on the other device.";}catch{invite.select();status.textContent="Select and copy the invitation above.";}};
+for(const [id,video] of [["check-mic",false],["check-camera",true]] as const){document.getElementById(id)!.onclick=async()=>{const result=document.getElementById("permission-result")!;const buttons=Array.from(document.querySelectorAll<HTMLButtonElement>('#check-mic,#check-camera'));buttons.forEach(b=>b.disabled=true);result.textContent="Waiting for device permission...";try{if(!navigator.mediaDevices?.getUserMedia)throw new Error("Device checks require HTTPS and a browser supporting microphone/camera access.");const stream=await navigator.mediaDevices.getUserMedia({audio:true,video});stream.getTracks().forEach(t=>t.stop());result.textContent="Device access works. Test tracks stopped. This checks permissions, not network call quality.";}catch(error){result.textContent=describeError(error);}finally{buttons.forEach(b=>b.disabled=false);}};}
+void fetch(`${SERVER_URL}/v1/demo/status`).then(async res=>{if(!res.ok)throw new Error("Unable to check the demo right now. Reload to retry.");return res.json();}).then(data=>{if(!data.enabled||typeof data.appId!=="string")throw new Error("The public demo is currently unavailable. Contact support or try again later.");APP_ID=data.appId;document.getElementById("demo-availability")!.textContent=`Device ${DEVICE.toUpperCase()} is ready. Start by connecting below.`;createPanel({title:`Device ${DEVICE.toUpperCase()}`,defaultUserId:ownUser,mount:document.querySelector(".panels")!});}).catch(error=>{document.getElementById("demo-availability")!.textContent=describeError(error);});
