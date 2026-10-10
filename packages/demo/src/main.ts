@@ -240,6 +240,8 @@ function createPanel(config: PanelConfig) {
         box.className = "video-box";
         video = document.createElement("video");
         video.autoplay = true;
+        // The SDK plays remote audio separately; keep the video element silent.
+        video.muted = true;
         video.playsInline = true;
         const label = document.createElement("span");
         label.className = "video-label";

@@ -214,3 +214,11 @@ button:disabled {
   gap: 8px;
 }
 
+
+/* Preserve hidden state and keep both call views inside narrow screens. */
+[hidden] { display: none !important; }
+.video-area, .remote-videos, .video-box { min-width: 0; }
+@media (max-width: 480px) {
+  .video-area { grid-template-columns: minmax(0, 1fr); }
+  .remote-videos { grid-template-columns: minmax(0, 1fr); }
+}
