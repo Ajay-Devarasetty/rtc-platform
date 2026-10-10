@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { handleClientMessage } from "./handlers.js";
 import { MemoryRoomStore } from "./store/memory.js";
 import { MemoryRoomRoleStore } from "./room-roles.js";
-import { resetCallState, registerRinging } from "./call-state.js";
+import { resetCallState, registerRinging, markCallConnected } from "./call-state.js";
 import type { ClientMessage, ServerMessage, TokenClaims } from "@rtc/protocol";
 import type { WebSocket } from "ws";
 import { getPool, closeDb } from "./db.js";
@@ -83,4 +83,35 @@ test("offline invites still dispatch a ringing webhook and retain a pending call
   assert.deepEqual(ctx.events, ["call.ringing"]);
   assert.equal(findUserCall("app", "bob")?.callType, "video");
   assert.equal(ctx.sent.length, 0);
+});
+
+
+test("SFU call producers relay only between authorized connected participants", async (t) => {
+  const previous = process.env.DATABASE_URL;
+  process.env.DATABASE_URL = "postgresql://unused/test";
+  t.after(async () => { resetCallState(); await closeDb(); if (previous === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = previous; });
+  t.mock.method(getPool()!, "query", async () => ({ rows: [{ plan: "pro" }] }));
+  resetCallState(); registerRinging("app", "video-call", "chat-room", "alice", "bob", "video");
+  markCallConnected("app", "video-call");
+  const payload = { roomId: "chat-room-call-video-call", callId: "video-call", toUserId: "bob", producerId: "camera", kind: "video", source: "camera" };
+  for (const source of ["camera", "screen"]) {
+    const ctx = context({ type: "sfu_producer", payload: { ...payload, source } });
+    ctx.claims.roomId = "chat-room";
+    ctx.roomRoles.assign("chat-room", "alice", "publisher");
+    await ctx.rooms.join("chat-room", "alice");
+    await handleClientMessage(ctx);
+    assert.equal(ctx.delivered.length, 1);
+    assert.equal(ctx.delivered[0].type, "sfu_producer");
+  }
+  for (const change of [{toUserId:"mallory"}, {roomId:"wrong"}, {callId:"wrong"}]) {
+    const ctx = context({type:"sfu_producer",payload:{...payload,...change}});
+    await ctx.rooms.join("chat-room", "alice"); await handleClientMessage(ctx);
+    assert.equal(ctx.delivered.length,0);
+  }
+  const outsider = context({type:"sfu_producer",payload}, "mallory");
+  await outsider.rooms.join("chat-room", "mallory"); await handleClientMessage(outsider);
+  assert.equal(outsider.delivered.length,0);
+  const scoped = context({type:"sfu_producer",payload}); scoped.claims.roomId="other";
+  await scoped.rooms.join("chat-room","alice"); await handleClientMessage(scoped);
+  assert.equal(scoped.delivered.length,0);
 });

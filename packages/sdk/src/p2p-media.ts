@@ -146,6 +146,7 @@ export class P2pMediaEngine {
 
   async shareScreen() {
     if (!this.peerConnection) throw new Error("Not in call");
+    if (this.screenStream) await this.stopScreenShare();
     this.screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
     const screenTrack = this.screenStream.getVideoTracks()[0];
     screenTrack.onended = () => void this.stopScreenShare();
@@ -155,14 +156,17 @@ export class P2pMediaEngine {
       await sender.replaceTrack(screenTrack);
     } else {
       this.peerConnection.addTrack(screenTrack, this.screenStream);
+      const call = this.getActiveCall();
+      if (call) await this.createOffer(call.peerUserId, call.callId);
     }
+    return this.screenStream;
   }
 
   async stopScreenShare() {
     if (!this.peerConnection || !this.localStream) return;
     const cameraTrack = this.localStream.getVideoTracks()[0];
     const sender = this.peerConnection.getSenders().find((s) => s.track?.kind === "video");
-    if (sender && cameraTrack) await sender.replaceTrack(cameraTrack);
+    if (sender) await sender.replaceTrack(cameraTrack || null);
     this.screenStream?.getTracks().forEach((t) => t.stop());
     this.screenStream = null;
   }

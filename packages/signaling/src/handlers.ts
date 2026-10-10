@@ -98,7 +98,7 @@ export async function handleClientMessage(ctx: HandlerContext) {
     return;
   }
   const roomId = (message.payload as { roomId?: unknown }).roomId;
-  const isPeerSignal = ["webrtc_offer", "webrtc_answer", "ice_candidate"].includes(message.type);
+  const isPeerSignal = ["webrtc_offer", "webrtc_answer", "ice_candidate", "sfu_producer"].includes(message.type);
   if (!isPeerSignal && (typeof roomId !== "string" || !roomId.trim() || !assertRoomScope(ctx, roomId, ws))) {
     if (typeof roomId !== "string" || !roomId.trim()) ctx.send(ws, { type: "error", payload: { message: "roomId is required" } });
     return;
@@ -352,8 +352,21 @@ export async function handleClientMessage(ctx: HandlerContext) {
         ctx.send(ctx.ws, { type: "error", payload: { message: "Invalid SFU payload" } });
         return;
       }
-      if (!(await ctx.rooms.isMember(payload.roomId, userId))) return;
-      const role = ctx.roomRoles.get(payload.roomId, userId);
+      let membershipRoom = payload.roomId;
+      if (payload.callId) {
+        const call = findUserCall(claims.appId, userId);
+        const peer = call?.callerUserId === userId ? call?.calleeUserId : call?.callerUserId;
+        if (!call || call.phase !== "connected" || call.callId !== payload.callId ||
+            peer !== payload.toUserId || payload.roomId !== `${call.roomId}-call-${call.callId}` ||
+            !assertRoomScope(ctx, call.roomId, ws)) {
+          ctx.send(ws, { type: "error", payload: { message: "Invalid call participant", code: "invalid_call" } });
+          return;
+        }
+        membershipRoom = call.roomId;
+      }
+      if (!assertRoomScope(ctx, membershipRoom, ws)) return;
+      if (!(await ctx.rooms.isMember(membershipRoom, userId))) return;
+      const role = ctx.roomRoles.get(membershipRoom, userId);
       if (!canPublish(role)) {
         ctx.send(ctx.ws, {
           type: "error",

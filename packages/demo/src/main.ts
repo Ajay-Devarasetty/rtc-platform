@@ -191,9 +191,13 @@ function createPanel(config: PanelConfig) {
       : "Disconnected";
   }
 
+  let incomingCall = false;
+  let sharingScreen = false;
+  function resetScreenButton() { sharingScreen = false; screenBtn.textContent = "Share screen"; }
+
   function setCallUi(ringing: boolean, active: boolean, video = false) {
-    acceptBtn.hidden = !ringing;
-    rejectBtn.hidden = !ringing;
+    acceptBtn.hidden = !(ringing && incomingCall);
+    rejectBtn.hidden = !(ringing && incomingCall);
     endBtn.hidden = !active;
     muteBtn.hidden = !active;
     camBtn.hidden = !active || !video;
@@ -201,8 +205,8 @@ function createPanel(config: PanelConfig) {
     screenBtn.hidden = !active;
     recordBtn.hidden = !active;
     stopRecordBtn.hidden = !active;
-    acceptBtn.disabled = !ringing;
-    rejectBtn.disabled = !ringing;
+    acceptBtn.disabled = !(ringing && incomingCall);
+    rejectBtn.disabled = !(ringing && incomingCall);
     endBtn.disabled = !active;
     muteBtn.disabled = !active;
     camBtn.disabled = !active;
@@ -280,6 +284,7 @@ function createPanel(config: PanelConfig) {
         log(logEl, `${joined} joined the room`);
       });
       rtc.on("callInvite", ({ fromUserId, callType }) => {
+        incomingCall = true;
         log(logEl, `Incoming ${callType || "voice"} call from ${fromUserId}`);
         setCallUi(true, false, callType === "video");
       });
@@ -292,6 +297,7 @@ function createPanel(config: PanelConfig) {
           inCall = false;
           isVideoSession = false;
           qualityBadge.hidden = true;
+          incomingCall = false; resetScreenButton();
           clearRemoteVideos();
           videoArea.hidden = !inGroupMedia;
           setConnected(true);
@@ -426,13 +432,13 @@ function createPanel(config: PanelConfig) {
   callBtn.onclick = async () => {
     const peer = peerIdInput.value.trim();
     if (!peer || !rtc) return;
-    try { await rtc.callUser(peer, { callType: "voice" }); } catch(error) { log(logEl, describeError(error)); }
+    try { incomingCall = false; await rtc.callUser(peer, { callType: "voice" }); } catch(error) { log(logEl, describeError(error)); }
   };
 
   videoCallBtn.onclick = async () => {
     const peer = peerIdInput.value.trim();
     if (!peer || !rtc) return;
-    try { await rtc.videoCallUser(peer); } catch(error) { log(logEl, describeError(error)); }
+    try { incomingCall = false; await rtc.videoCallUser(peer); } catch(error) { log(logEl, describeError(error)); }
   };
 
   acceptBtn.onclick = async () => {
@@ -467,12 +473,19 @@ function createPanel(config: PanelConfig) {
   };
 
   screenBtn.onclick = async () => {
+    if (!rtc) return;
+    screenBtn.disabled = true;
     try {
-      await rtc?.shareScreen();
-      log(logEl, "Screen sharing");
-    } catch (err) {
-      log(logEl, err instanceof Error ? err.message : "Screen share failed");
-    }
+      if (sharingScreen) { await rtc.stopScreenShare(); resetScreenButton(); log(logEl, "Screen sharing stopped"); }
+      else {
+        if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("Screen sharing is not supported in this browser. Try desktop Chrome or Edge.");
+        const stream = await rtc.shareScreen();
+        sharingScreen = true; screenBtn.textContent = "Stop sharing";
+        stream?.getVideoTracks()[0]?.addEventListener("ended", resetScreenButton, { once: true });
+        log(logEl, "Screen sharing started. Use Stop sharing to return to your camera.");
+      }
+    } catch (err) { log(logEl, describeError(err)); }
+    finally { screenBtn.disabled = false; }
   };
 
   recordBtn.onclick = () => {

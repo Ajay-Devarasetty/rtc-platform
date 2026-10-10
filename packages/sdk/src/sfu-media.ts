@@ -148,6 +148,7 @@ export class SfuMediaEngine {
     );
     this.producers.set("screen", producer);
     this.producerMeta.set(producer.id, { source: "screen", kind: "video" });
+    return this.screenStream;
   }
 
   async stopScreenShare() {

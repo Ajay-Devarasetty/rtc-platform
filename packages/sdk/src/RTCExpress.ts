@@ -726,13 +726,13 @@ export class RTCExpress extends EventEmitter {
 
   async shareScreen() {
     if (this.resolvedMediaMode === "sfu" && this.sfu) {
-      await this.sfu.shareScreen({
+      return await this.sfu.shareScreen({
         callId: this.activeCall?.callId,
         targetUserId: this.activeCall?.peerUserId,
         announceToRoom: this.inVideoRoom,
       });
     } else if (this.p2p) {
-      await this.p2p.shareScreen();
+      return await this.p2p.shareScreen();
     } else {
       throw new Error("Not in a call or video room");
     }
